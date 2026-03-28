@@ -60,7 +60,7 @@ export interface DiplomaticMemory {
   tradeDealsCompleted: number;
   timesAttackedUs: number;
   timesWeAttacked: number;
-  outstandingOffer: string | null;
+  outstandingOffer: Action | null;
 }
 
 /** The full state of one kingdom at a point in time. */
@@ -68,6 +68,7 @@ export interface Kingdom {
   name: string;
   population: number;
   army: number;
+  armyEffectiveness: number;
   morale: number;
   stockpile: Resources;
   production: Resources;

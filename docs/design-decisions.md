@@ -151,7 +151,7 @@ Modifiers per tick:
 
 Morale affects:
   - combat power (multiplier)
-  - desertion rate
+  - desertion rate (scaled by 2 - morale; see Army System)
 ```
 
 ---
@@ -180,7 +180,11 @@ If materials deficit:
 
 If food deficit:
   morale -= 0.1 per tick (via morale system)
-  desertion: army -= army * 0.03 per tick
+  desertion: army -= army * 0.03 * (2 - morale) per tick
+    At morale 1.0 (default): baseline 3% loss
+    At morale 0.2 (floor):   ~5.4% loss — nearly double
+    At morale 1.5 (ceiling):  ~1.5% loss — half
+    Creates feedback loop: food deficit → morale drops → faster desertion
 ```
 
 ### Army Effectiveness
@@ -204,7 +208,7 @@ ratio         = attack_power / defense_power
 |---|---|---|
 | > 2.0 | decisive_win | Attacker wins cleanly, low losses |
 | 1.3 – 2.0 | marginal_win | Attacker wins, moderate losses both sides |
-| 0.8 – 1.3 | contested | No territorial change, both take losses — coin flip only here |
+| 0.8 – 1.3 | contested | Both take equal losses (−20%) — coin flip determines tile capture |
 | < 0.8 | repelled | Attacker pushed back with heavy losses |
 
 Randomness is quarantined to the `contested` band only. All other outcomes are fully deterministic.
@@ -236,7 +240,7 @@ repelled:
 ```
 
 ### Tile Capture
-On any attacker win (decisive or marginal):
+On decisive_win, marginal_win, or contested (coin flip favors attacker):
 - One tile transfers from defender to attacker
 - Eligible tiles: defender tiles adjacent to any attacker tile
 - Attacker specifies `targetTileId` in the Action — engine validates adjacency
