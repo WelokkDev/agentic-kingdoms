@@ -261,13 +261,13 @@ Example: `{ offer: { food: 10, water: 0, materials: 0 }, request: { food: 0, wat
 
 ### Trade Flow
 ```
-Tick N:   Kingdom A submits TRADE_OFFER targeting Kingdom B
-Tick N:   Kingdom B sees offer in its perception
-Tick N:   Kingdom B submits TRADE_ACCEPT or TRADE_REJECT
-Resolution: if both actions present and valid, trade executes atomically
+Tick N:     Kingdom A submits TRADE_OFFER targeting Kingdom B
+            Offer stored in A.diplomaticMemory["B"].outstandingOffer
+Tick N+1:   Kingdom B sees offer in perception, submits TRADE_ACCEPT or TRADE_REJECT
+            Resolution: if accept is valid, trade executes atomically
 ```
 
-Offers expire after 2 ticks if not responded to.
+This is a two-tick flow. Perception is generated before actions are submitted (loop step 7 vs step 10), so B cannot see an offer made in the same tick. Offers expire after 2 ticks if not responded to.
 
 ### tradeEfficiency Multiplier
 Coastal kingdoms start with `tradeEfficiency: 1.2`.
@@ -283,7 +283,14 @@ Each kingdom tracks per-relationship:
 - Last interaction tick
 
 Status transitions are driven by actions, not by time.
-An ALLIED kingdom that attacks shifts directly to AT_WAR.
+
+Transition rules:
+- Any status → AT_WAR: when an ATTACK action is resolved between the pair
+- AT_WAR → HOSTILE: when a trade is completed between the pair
+- HOSTILE → NEUTRAL: when a trade is completed between the pair
+- NEUTRAL → TRADE_PARTNER: when 3+ trades have been completed
+- TRADE_PARTNER → ALLIED: when both kingdoms send NEGOTIATE with "alliance" in the same tick
+- ALLIED → AT_WAR: immediate on attack (broken pact — no intermediate step)
 
 ---
 

@@ -33,6 +33,15 @@ export function formatResources(
   return `food${sep}${r.food} water${sep}${r.water} materials${sep}${r.materials}`;
 }
 
+/** Compact resource formatter that omits zero values. Used for OFFERS where token efficiency matters. */
+export function formatResourcesCompact(r: Resources): string {
+  const parts: string[] = [];
+  if (r.food !== 0) parts.push(`food:${r.food}`);
+  if (r.water !== 0) parts.push(`water:${r.water}`);
+  if (r.materials !== 0) parts.push(`materials:${r.materials}`);
+  return parts.join(" ");
+}
+
 /** Groups tile IDs by TileType and returns a compact string like "mountain×4 forest×1". */
 export function formatTileGroup(tileIds: string[], map: MapGrid): string {
   const counts: Partial<Record<TileType, number>> = {};
@@ -227,8 +236,8 @@ export function generatePerception(
     if (!mem || !mem.outstandingOffer) continue;
     const offer = mem.outstandingOffer;
     if (offer.offer && offer.request) {
-      const giveStr = formatResources(offer.offer, "");
-      const recvStr = formatResources(offer.request, "");
+      const giveStr = formatResourcesCompact(offer.offer);
+      const recvStr = formatResourcesCompact(offer.request);
       offerLines.push(
         `${otherName} \u2192 you: give ${giveStr} \u2192 receive ${recvStr}`,
       );
