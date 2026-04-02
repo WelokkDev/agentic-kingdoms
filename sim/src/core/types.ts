@@ -187,4 +187,6 @@ export interface TickResult {
   eventsThisTick: Event[];
   actionsThisTick: Record<string, Action>;
   terminated: boolean;
+  /** Optional per-kingdom LLM response times in ms. Populated in debug mode. */
+  agentTimings?: Record<string, number>;
 }

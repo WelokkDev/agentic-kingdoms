@@ -1,4 +1,4 @@
-# Geopolitical Simulation — Project Memory
+# Agentic Kingdoms — Project Memory
 
 A deterministic, terminal-first simulation where AI-controlled kingdoms interact under resource constraints. Behavior emerges from environmental pressure — no explicit goals, no scripted strategies.
 

@@ -568,21 +568,35 @@ export async function runTick(
 
 // ─── Top-Level Runner ──────────────────────────────────────────────────────
 
+/** Callback invoked after each tick with the full TickResult. */
+export type RenderCallback = (result: TickResult) => Promise<void>;
+
+/** Returns true when the simulation should stop early (e.g. user pressed quit). */
+export type QuitCheck = () => boolean;
+
 export async function runSimulation(
   simConfig: SimConfig,
   agentConfig: AgentConfig,
+  onTick?: RenderCallback,
+  shouldQuit?: QuitCheck,
 ): Promise<void> {
   let gameState = initializeGameState(simConfig);
   const rng = createSeededRng(simConfig.seed);
   let prevTickEvents: Event[] = [];
 
   for (let tick = 1; tick <= simConfig.maxTicks; tick++) {
+    if (shouldQuit?.()) break;
+
     gameState = { ...gameState, tick };
     const result = await runTick(gameState, agentConfig, rng, prevTickEvents);
     gameState = result.gameState;
     prevTickEvents = result.eventsThisTick;
 
-    console.log(formatTickSummary(tick, gameState.kingdoms, result.eventsThisTick));
+    if (onTick) {
+      await onTick(result);
+    } else {
+      console.log(formatTickSummary(tick, gameState.kingdoms, result.eventsThisTick));
+    }
 
     if (result.terminated) break;
   }
