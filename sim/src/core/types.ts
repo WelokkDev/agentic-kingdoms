@@ -61,6 +61,8 @@ export interface DiplomaticMemory {
   timesAttackedUs: number;
   timesWeAttacked: number;
   outstandingOffer: Action | null;
+  /** Consecutive ticks at AT_WAR status entering this tick. Resets to 0 on status transition away from AT_WAR only. */
+  ticksAtWar: number;
 }
 
 /** The full state of one kingdom at a point in time. */

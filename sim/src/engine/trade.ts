@@ -22,6 +22,7 @@ function defaultDiplomaticMemory(): DiplomaticMemory {
     timesAttackedUs: 0,
     timesWeAttacked: 0,
     outstandingOffer: null,
+    ticksAtWar: 0,
   };
 }
 
@@ -250,6 +251,9 @@ export function resolveTradeAccept(
       accepterName,
       DiplomaticStatus.HOSTILE,
     );
+    // Reset ticksAtWar symmetrically on status transition away from AT_WAR
+    kingdoms = updateMemory(kingdoms, offererName, accepterName, { ticksAtWar: 0 });
+    kingdoms = updateMemory(kingdoms, accepterName, offererName, { ticksAtWar: 0 });
   } else if (currentStatus === DiplomaticStatus.HOSTILE) {
     kingdoms = setStatusSymmetric(
       kingdoms,
@@ -388,8 +392,9 @@ export function resolveNegotiate(
 }
 
 /** Clears outstanding offers that are more than 2 ticks old. Called once per tick before resolution. */
-export function expireOutstandingOffers(gameState: GameState): GameState {
+export function expireOutstandingOffers(gameState: GameState): { gameState: GameState; events: Event[] } {
   let kingdoms = { ...gameState.kingdoms };
+  const events: Event[] = [];
 
   for (const [kingdomName, kingdom] of Object.entries(gameState.kingdoms)) {
     for (const [targetName, mem] of Object.entries(
@@ -402,11 +407,19 @@ export function expireOutstandingOffers(gameState: GameState): GameState {
         kingdoms = updateMemory(kingdoms, kingdomName, targetName, {
           outstandingOffer: null,
         });
+        events.push(
+          logDiplomacy(
+            gameState.tick,
+            kingdomName,
+            targetName,
+            "trade offer expired — no response after 2 ticks",
+          ),
+        );
       }
     }
   }
 
-  return { ...gameState, kingdoms };
+  return { gameState: { ...gameState, kingdoms }, events };
 }
 
 /** Updates diplomatic status symmetrically for both kingdoms. */

@@ -2,7 +2,8 @@
 
 A deterministic, terminal-first simulation where AI-controlled kingdoms interact under resource constraints. Behavior emerges from environmental pressure — no explicit goals, no scripted strategies.
 
-See docs/design-decisions.md for locked design choices and their reasoning.
+docs/design-decisions.md is deprecated — the codebase supersedes it.
+The source of truth for all physics and mechanics is the engine files in src/.
 
 ---
 
@@ -19,8 +20,6 @@ See docs/design-decisions.md for locked design choices and their reasoning.
 ## Project Structure
 
 ```
-docs/
-  design-decisions.md
 sim/
   src/
     core/         ← types only (types.ts) — no logic
@@ -62,7 +61,7 @@ The loop orchestrator calls agents, collects actions, then passes them to the en
 
 **Combat outcomes** are near-deterministic by ratio band. Randomness only in the contested band (ratio 0.8–1.3).
 
-See docs/design-decisions.md for full physics spec (resource yields, combat ratios, morale modifiers, population math).
+docs/design-decisions.md is deprecated — see engine files in src/ for physics spec (resource yields, combat ratios, morale modifiers, population math).
 
 ---
 

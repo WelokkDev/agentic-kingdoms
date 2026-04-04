@@ -140,6 +140,35 @@ export function getBorderLines(
   return lines;
 }
 
+// ─── Reputation ─────────────────────────────────────────────────────────────
+
+function computeReputation(
+  kingdomName: string,
+  gameState: GameState,
+): "HIGH" | "MEDIUM" | "LOW" {
+  const kingdom = gameState.kingdoms[kingdomName];
+  if (!kingdom) return "MEDIUM";
+
+  let totalTrades = 0;
+  let totalAttacks = 0;
+  let betrayals = 0;
+
+  for (const mem of Object.values(kingdom.diplomaticMemory)) {
+    totalTrades += mem.tradeDealsCompleted;
+    totalAttacks += mem.timesWeAttacked;
+
+    // betrayal = attacked a kingdom we had traded with 2+ times
+    if (mem.timesWeAttacked > 0 && mem.tradeDealsCompleted >= 2) {
+      betrayals += 1;
+    }
+  }
+
+  if (betrayals >= 1) return "LOW";
+  if (totalAttacks > totalTrades) return "LOW";
+  if (totalTrades >= 3 && totalAttacks === 0) return "HIGH";
+  return "MEDIUM";
+}
+
 // ─── Main Perception ────────────────────────────────────────────────────────
 
 /** Produces the full perception string for one kingdom. */
@@ -203,8 +232,9 @@ export function generatePerception(
   for (const [name, k] of Object.entries(gameState.kingdoms)) {
     if (name === kingdomName || !k.alive) continue;
     const pressure = computePressureLabel(k);
+    const trust = computeReputation(name, gameState);
     lines.push(
-      `${name}: pop:${Math.round(k.population)} army:${Math.round(k.army)} morale:${k.morale.toFixed(1)} | ${pressure} tiles:${k.tileIds.length}`,
+      `${name}: pop:${Math.round(k.population)} army:${Math.round(k.army)} morale:${k.morale.toFixed(1)} | ${pressure} tiles:${k.tileIds.length} | trust:${trust}`,
     );
   }
   lines.push("");

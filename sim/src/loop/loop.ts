@@ -25,6 +25,7 @@ import {
   recruitTroops,
   updateArmyEffectiveness,
   applyDesertion,
+  applyWarExhaustion,
 } from "../engine/army.js";
 import {
   resolveCombat,
@@ -53,10 +54,7 @@ import {
 import { generatePerception } from "../agent/perception.js";
 import { callAllAgents } from "../agent/llm.js";
 import type { AgentConfig } from "../agent/llm.js";
-
-// ─── Constants ─────────────────────────────────────────────────────────────
-
-const RECRUIT_AMOUNT = 5;
+import { RECRUIT_AMOUNT } from "../engine/actions.js";
 
 // ─── Seeded RNG ────────────────────────────────────────────────────────────
 
@@ -240,7 +238,9 @@ export async function runTick(
   // PRE-TICK (step 0): Expire outstanding trade offers older than 2 ticks
   // ═══════════════════════════════════════════════════════════════════════
 
-  gameState = expireOutstandingOffers(gameState);
+  const expiryResult = expireOutstandingOffers(gameState);
+  gameState = expiryResult.gameState;
+  ctx.eventsThisTick.push(...expiryResult.events);
 
   // ═══════════════════════════════════════════════════════════════════════
   // RATION PASS (step 1): Identify RATION actions from previous tick
@@ -330,6 +330,15 @@ export async function runTick(
     k = applyDesertion(k);
 
     gameState = setKingdom(gameState, name, k);
+  }
+
+  // Step 9.5: applyWarExhaustion — per-tick penalty for AT_WAR kingdoms
+  for (const name of aliveNames) {
+    gameState = setKingdom(
+      gameState,
+      name,
+      applyWarExhaustion(gameState.kingdoms[name], gameState),
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -513,6 +522,27 @@ export async function runTick(
         tick - mem.lastInteractionTick > 3
       ) {
         gameState = updateDiplomaticStatus(a, b, DiplomaticStatus.HOSTILE, gameState);
+        // Reset ticksAtWar symmetrically on status transition away from AT_WAR
+        gameState = {
+          ...gameState,
+          kingdoms: {
+            ...gameState.kingdoms,
+            [a]: {
+              ...gameState.kingdoms[a],
+              diplomaticMemory: {
+                ...gameState.kingdoms[a].diplomaticMemory,
+                [b]: { ...gameState.kingdoms[a].diplomaticMemory[b], ticksAtWar: 0 },
+              },
+            },
+            [b]: {
+              ...gameState.kingdoms[b],
+              diplomaticMemory: {
+                ...gameState.kingdoms[b].diplomaticMemory,
+                [a]: { ...gameState.kingdoms[b].diplomaticMemory[a], ticksAtWar: 0 },
+              },
+            },
+          },
+        };
       }
     }
   }
@@ -538,6 +568,46 @@ export async function runTick(
     };
 
     ctx.eventsThisTick.push(logKingdomEliminated(tick, name));
+
+    // Reset ticksAtWar and status for all pairs involving the eliminated kingdom
+    let updatedKingdoms = { ...gameState.kingdoms };
+    for (const otherName of Object.keys(updatedKingdoms)) {
+      if (otherName === name) continue;
+      if (!updatedKingdoms[otherName].alive) continue;
+
+      // Reset on eliminated kingdom's side
+      updatedKingdoms = {
+        ...updatedKingdoms,
+        [name]: {
+          ...updatedKingdoms[name],
+          diplomaticMemory: {
+            ...updatedKingdoms[name].diplomaticMemory,
+            [otherName]: {
+              ...updatedKingdoms[name].diplomaticMemory[otherName],
+              ticksAtWar: 0,
+              status: DiplomaticStatus.NEUTRAL,
+            },
+          },
+        },
+      };
+
+      // Reset on surviving kingdom's side
+      updatedKingdoms = {
+        ...updatedKingdoms,
+        [otherName]: {
+          ...updatedKingdoms[otherName],
+          diplomaticMemory: {
+            ...updatedKingdoms[otherName].diplomaticMemory,
+            [name]: {
+              ...updatedKingdoms[otherName].diplomaticMemory[name],
+              ticksAtWar: 0,
+              status: DiplomaticStatus.NEUTRAL,
+            },
+          },
+        },
+      };
+    }
+    gameState = { ...gameState, kingdoms: updatedKingdoms };
   }
 
   // Step 20: Update production/consumption caches after tile transfers

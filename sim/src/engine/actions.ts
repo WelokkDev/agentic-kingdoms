@@ -7,6 +7,11 @@ import {
 } from "../core/types.js";
 import { getAdjacentEnemyTiles } from "./map.js";
 
+// ─── Constants ────────────────────────────────────────────────────────────
+
+/** Number of soldiers recruited per RECRUIT action. */
+export const RECRUIT_AMOUNT = 5;
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -117,8 +122,8 @@ export function validateAction(
   }
 
   if (actionType === ActionType.RECRUIT) {
-    // Kingdom must afford at least 1 soldier: 2 materials + 1 food
-    if (source.stockpile.materials < 2 || source.stockpile.food < 1)
+    // Kingdom must afford the full batch: RECRUIT_AMOUNT soldiers
+    if (source.stockpile.materials < RECRUIT_AMOUNT * 2 || source.stockpile.food < RECRUIT_AMOUNT)
       return null;
   }
 
@@ -226,8 +231,8 @@ export function getValidActionTypes(
     }
   }
 
-  // RECRUIT: requires food >= 1 and materials >= 2
-  if (kingdom.stockpile.food >= 1 && kingdom.stockpile.materials >= 2) {
+  // RECRUIT: requires full batch cost
+  if (kingdom.stockpile.food >= RECRUIT_AMOUNT && kingdom.stockpile.materials >= RECRUIT_AMOUNT * 2) {
     result.push(ActionType.RECRUIT);
   }
 

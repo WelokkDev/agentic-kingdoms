@@ -27,6 +27,19 @@ interface OpenRouterRequest {
 const SYSTEM_PROMPT = `You are the ruler of a kingdom. Each turn you will receive a report of your kingdom's current state.
 Respond with exactly one JSON action from the schema below. No explanation. No chain of thought. Just the JSON object.
 
+MECHANICS:
+RECRUIT: recruits 5 soldiers. Costs food:5 + materials:10 total. Army cannot exceed population.
+ATTACK: costs food:5 + materials:3 upfront regardless of outcome. Captures one
+  border tile on decisive or marginal win. You must own a tile adjacent to target.
+EXPAND: free. Claims one adjacent neutral tile immediately.
+RATION: reduces food and water consumption by 30% this tick. Morale -0.15.
+TRADE_OFFER: propose resource exchange. Target has 2 ticks to respond or it expires.
+TRADE_ACCEPT: accept an outstanding offer shown in your OFFERS section.
+NEGOTIATE: sends a message. No immediate mechanical effect.
+Tile types: farmland→food, mountain→materials, river/wetland→water, coastal→food+water (Thessan gets +20% on received trades)
+Deficit reduces population each tick. Army requires food+materials to avoid desertion.
+War exhaustion: morale and materials drain each tick you remain AT_WAR.
+
 ACTION SCHEMA:
 { "actionType": "PASS" }
 { "actionType": "RATION" }
@@ -43,7 +56,9 @@ Rules:
 - targetTileId must be a tile ID visible in your BORDERS section
 - targetKingdom must be a kingdom name visible in your perception
 - offer and request must have at least one non-zero value between them
-- If uncertain, respond with { "actionType": "PASS" }`;
+Resource deficit kills population. Population collapse eliminates your kingdom.
+Inaction during deficit accelerates collapse. PASS is always available but is
+rarely the right choice.`;
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const RETRY_DELAY_MS = 500;
