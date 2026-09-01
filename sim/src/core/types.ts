@@ -183,6 +183,8 @@ export interface GameState {
   map: MapGrid;
   events: Event[];
   pendingActions: Record<string, Action>;
+  /** Per-kingdom feedback about the previous tick's order (rejection reasons, LLM failures). Cleared/overwritten each tick. */
+  agentFeedback: Record<string, string>;
   rngSeed: number;
   config: SimConfig;
 }

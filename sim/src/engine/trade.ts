@@ -112,9 +112,23 @@ export function resolveTradeOffer(
     return { gameState, event: null };
   }
 
+  // Escrow: offered resources leave the offerer's stockpile immediately.
+  // They are returned on rejection or expiry, and delivered on acceptance.
+  const escrowedKingdoms: Record<string, Kingdom> = {
+    ...gameState.kingdoms,
+    [sourceKingdom]: {
+      ...source,
+      stockpile: {
+        food: source.stockpile.food - offer.food,
+        water: source.stockpile.water - offer.water,
+        materials: source.stockpile.materials - offer.materials,
+      },
+    },
+  };
+
   // Store offer on offerer's memory about target
   let kingdoms = updateMemory(
-    { ...gameState.kingdoms },
+    escrowedKingdoms,
     sourceKingdom,
     targetKingdom,
     { outstandingOffer: action, lastInteractionTick: gameState.tick },
@@ -157,13 +171,22 @@ export function resolveTradeAccept(
   const request = offerAction.request!;
   const accepter = gameState.kingdoms[accepterName];
 
-  // Validate both sides can still afford
-  if (
-    !canAfford(offerer.stockpile, offer) ||
-    !canAfford(accepter.stockpile, request)
-  ) {
+  // Offerer's goods are already escrowed — only the accepter's payment can fail
+  if (!canAfford(accepter.stockpile, request)) {
+    // Refund escrow to offerer and clear the offer
+    const refundedKingdoms: Record<string, Kingdom> = {
+      ...gameState.kingdoms,
+      [offererName]: {
+        ...offerer,
+        stockpile: {
+          food: offerer.stockpile.food + offer.food,
+          water: offerer.stockpile.water + offer.water,
+          materials: offerer.stockpile.materials + offer.materials,
+        },
+      },
+    };
     const kingdoms = updateMemory(
-      { ...gameState.kingdoms },
+      refundedKingdoms,
       offererName,
       accepterName,
       { outstandingOffer: null },
@@ -172,7 +195,7 @@ export function resolveTradeAccept(
       gameState.tick,
       EventType.DIPLOMACY,
       [offererName, accepterName],
-      `Trade between ${offererName} and ${accepterName} fell through — insufficient resources.`,
+      `Trade between ${offererName} and ${accepterName} fell through — ${accepterName} could not pay. Escrowed goods returned.`,
       {},
     );
     return { gameState: { ...gameState, kingdoms }, event };
@@ -187,23 +210,19 @@ export function resolveTradeAccept(
     ...gameState.kingdoms,
     [offererName]: {
       ...offerer,
+      // Offer already deducted at escrow time — only the payment arrives now
       stockpile: {
         food: Math.max(
           0,
-          offerer.stockpile.food -
-            offer.food +
-            request.food * offerer.tradeEfficiency,
+          offerer.stockpile.food + request.food * offerer.tradeEfficiency,
         ),
         water: Math.max(
           0,
-          offerer.stockpile.water -
-            offer.water +
-            request.water * offerer.tradeEfficiency,
+          offerer.stockpile.water + request.water * offerer.tradeEfficiency,
         ),
         materials: Math.max(
           0,
-          offerer.stockpile.materials -
-            offer.materials +
+          offerer.stockpile.materials +
             request.materials * offerer.tradeEfficiency,
         ),
       },
@@ -304,10 +323,26 @@ export function resolveTradeReject(
   if (!offerMem?.outstandingOffer) return { gameState, event: null };
 
   const currentStatus = offerMem.status;
+  const rejectedOffer = offerMem.outstandingOffer.offer;
+
+  // Refund escrowed resources to the offerer
+  const refundedKingdoms: Record<string, Kingdom> = rejectedOffer
+    ? {
+        ...gameState.kingdoms,
+        [offererName]: {
+          ...offerer,
+          stockpile: {
+            food: offerer.stockpile.food + rejectedOffer.food,
+            water: offerer.stockpile.water + rejectedOffer.water,
+            materials: offerer.stockpile.materials + rejectedOffer.materials,
+          },
+        },
+      }
+    : { ...gameState.kingdoms };
 
   // Clear offer, update interaction tick
   let kingdoms = updateMemory(
-    { ...gameState.kingdoms },
+    refundedKingdoms,
     offererName,
     rejectorName,
     { outstandingOffer: null, lastInteractionTick: gameState.tick },
@@ -405,6 +440,22 @@ export function expireOutstandingOffers(gameState: GameState): { gameState: Game
         mem.outstandingOffer !== null &&
         mem.lastInteractionTick < gameState.tick - 2
       ) {
+        // Refund escrowed resources to the offerer before clearing
+        const expiredOffer = mem.outstandingOffer.offer;
+        if (expiredOffer) {
+          const offerer = kingdoms[kingdomName];
+          kingdoms = {
+            ...kingdoms,
+            [kingdomName]: {
+              ...offerer,
+              stockpile: {
+                food: offerer.stockpile.food + expiredOffer.food,
+                water: offerer.stockpile.water + expiredOffer.water,
+                materials: offerer.stockpile.materials + expiredOffer.materials,
+              },
+            },
+          };
+        }
         kingdoms = updateMemory(kingdoms, kingdomName, targetName, {
           outstandingOffer: null,
         });
@@ -413,7 +464,7 @@ export function expireOutstandingOffers(gameState: GameState): { gameState: Game
             gameState.tick,
             kingdomName,
             targetName,
-            "trade offer expired — no response after 2 ticks",
+            "trade offer expired — no response after 2 ticks, escrowed goods returned",
           ),
         );
       }

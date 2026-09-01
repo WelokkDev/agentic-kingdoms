@@ -13,6 +13,7 @@ import {
   getDeficit,
 } from "../engine/resources.js";
 import { getAdjacentEnemyTiles } from "../engine/map.js";
+import { getValidActionTypes } from "../engine/actions.js";
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -190,6 +191,20 @@ export function generatePerception(
   lines.push(`=== ${kingdomName} | TICK ${tick} ===`);
   lines.push("");
 
+  // ── LAST TICK ── (closes the feedback loop: rejections and substitutions)
+  const feedback = gameState.agentFeedback[kingdomName];
+  const lastAction = gameState.pendingActions[kingdomName];
+  if (feedback) {
+    lines.push(`LAST TICK: ${feedback}`);
+    lines.push("");
+  } else if (lastAction) {
+    const target = lastAction.targetTileId ?? lastAction.targetKingdom;
+    lines.push(
+      `LAST TICK: executed ${lastAction.actionType}${target ? ` (${target})` : ""}`,
+    );
+    lines.push("");
+  }
+
   // ── YOUR STATE ──
   lines.push("YOUR STATE");
   lines.push(`tiles: ${formatTileGroup(kingdom.tileIds, map)}`);
@@ -251,8 +266,11 @@ export function generatePerception(
     if (name === kingdomName || !k.alive) continue;
     const pressure = computePressureLabel(k);
     const trust = computeReputation(name, gameState);
+    // Production is public knowledge — terrain is visible. This is what lets
+    // agents find the counter-party that actually holds the supply they need.
+    const prod = k.production;
     lines.push(
-      `${name}: pop:${Math.round(k.population)} army:${Math.round(k.army)} morale:${k.morale.toFixed(1)} | ${pressure} tiles:${k.tileIds.length} | trust:${trust}`,
+      `${name}: pop:${Math.round(k.population)} army:${Math.round(k.army)} morale:${k.morale.toFixed(1)} | ${pressure} tiles:${k.tileIds.length} prod:f${prod.food} w${prod.water} m${prod.materials} | trust:${trust}`,
     );
   }
   lines.push("");
@@ -315,20 +333,25 @@ export function generatePerception(
     lines.push("");
   }
 
+  // ── VALID ACTIONS ── (only these action types will be accepted this tick)
+  const validTypes = getValidActionTypes(kingdom, gameState);
+  lines.push(`VALID ACTIONS: ${validTypes.join(" ")}`);
+  lines.push("");
+
   // ── EVENTS ──
   let events = getEventsForKingdom(kingdomName, tick, gameState.events);
 
   // Token budget enforcement: trim EVENTS first, then collapse DIPLOMACY
   let result = assemble(lines, events);
-  if (estimateTokenCount(result) > 200 && events.length > 2) {
+  if (estimateTokenCount(result) > 300 && events.length > 2) {
     events = events.slice(0, 2);
     result = assemble(lines, events);
   }
-  if (estimateTokenCount(result) > 200 && events.length > 1) {
+  if (estimateTokenCount(result) > 300 && events.length > 1) {
     events = events.slice(0, 1);
     result = assemble(lines, events);
   }
-  if (estimateTokenCount(result) > 200) {
+  if (estimateTokenCount(result) > 300) {
     // Collapse DIPLOMACY to status-only (remove stats after status)
     const collapsed = lines.map((line) => {
       const dipMatch = line.match(/^(.+?): (NEUTRAL|TRADE_PARTNER|ALLIED|HOSTILE|AT_WAR) \|.+$/);

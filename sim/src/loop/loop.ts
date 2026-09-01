@@ -179,11 +179,14 @@ export function initializeGameState(config: SimConfig): GameState {
 
     const baseKingdom: Kingdom = {
       name,
-      population: 30,
-      army: 10,
+      // Sized against total map yield: at pop 12 + army 5, the fully-expanded
+      // map produces ~84 food/tick vs ~85 demand — survivable, but structurally
+      // zero-sum once the land rush ends. Deficits are fixable by trade or war.
+      population: 12,
+      army: 5,
       armyEffectiveness: 1.0,
       morale: 1.0,
-      stockpile: { food: 20, water: 20, materials: 20 },
+      stockpile: { food: 30, water: 20, materials: 20 },
       production: { food: 0, water: 0, materials: 0 },
       consumption: { food: 0, water: 0, materials: 0 },
       tileIds,
@@ -206,6 +209,7 @@ export function initializeGameState(config: SimConfig): GameState {
     map,
     events: [],
     pendingActions: {},
+    agentFeedback: {},
     rngSeed: config.seed,
     config,
   };
@@ -354,10 +358,11 @@ export async function runTick(
   // generatePerception is called inside callAllAgents
   // ═══════════════════════════════════════════════════════════════════════
 
-  const actions = await callAllAgents(gameState, agentConfig);
+  const { actions, feedback } = await callAllAgents(gameState, agentConfig);
 
-  // Store actions as pendingActions so resolveNegotiate can check mutual proposals
-  gameState = { ...gameState, pendingActions: actions };
+  // Store actions as pendingActions so resolveNegotiate can check mutual proposals.
+  // agentFeedback persists into next tick's perception (LAST TICK line).
+  gameState = { ...gameState, pendingActions: actions, agentFeedback: feedback };
 
   // ═══════════════════════════════════════════════════════════════════════
   // ACTION RESOLUTION PHASE (steps 12–17)

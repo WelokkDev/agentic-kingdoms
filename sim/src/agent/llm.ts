@@ -1,7 +1,7 @@
 import { Action, GameState } from "../core/types.js";
 import { generatePerception } from "./perception.js";
 import {
-  validateAction,
+  validateActionDetailed,
   parseActionFromLLMResponse,
   getFallbackAction,
 } from "../engine/actions.js";
@@ -73,6 +73,9 @@ ACTION SCHEMA:
 
 Rules:
 - Respond with one JSON object only
+- You MUST choose an actionType from the VALID ACTIONS list in your report
+- LAST TICK shows the outcome of your previous order — if it was rejected, do not repeat it unchanged
+- TRADE_OFFER locks your offered resources in escrow until accepted (delivered), rejected, or expired after 2 ticks (refunded). You can only offer what you currently hold.
 - targetTileId must be a tile ID visible in your BORDERS section
 - targetKingdom must be a kingdom name visible in your perception
 - offer and request must have at least one non-zero value between them
@@ -309,9 +312,9 @@ async function fetchWithRetry(
       if (result.content !== null) {
         return { content: result.content, failReason: null };
       }
-      // Retry on 429 (rate limit) and 529 (Anthropic overloaded) — transient
+      // Retry on 429 (rate limit), 503, and 529 (overloaded) — transient
       if (
-        (result.status === 429 || result.status === 529) &&
+        (result.status === 429 || result.status === 503 || result.status === 529) &&
         attempt < config.maxRetries
       ) {
         const backoff = RETRY_DELAY_MS * Math.pow(2, attempt);
@@ -338,13 +341,19 @@ async function fetchWithRetry(
 
 // ─── Agent Call ────────────────────────────────────────────────────────────
 
+export interface AgentTurn {
+  action: Action;
+  /** Non-null when the agent's order failed and RATION was substituted. Fed into next tick's perception. */
+  feedback: string | null;
+}
+
 export async function callAgent(
   kingdomName: string,
   perception: string,
   config: AgentConfig,
   gameState: GameState,
   tick: number,
-): Promise<Action> {
+): Promise<AgentTurn> {
   const fallback = getFallbackAction(kingdomName);
   const body = buildRequestBody(perception, config);
 
@@ -355,15 +364,23 @@ export async function callAgent(
   );
 
   if (result.content === null) {
-    logAgentCall(kingdomName, tick, false, result.failReason ?? "empty response");
-    return fallback;
+    const reason = result.failReason ?? "empty response";
+    logAgentCall(kingdomName, tick, false, reason);
+    return {
+      action: fallback,
+      feedback: `your order was lost (${reason}) — RATION executed by default`,
+    };
   }
 
   const parsed = parseActionFromLLMResponse(result.content, kingdomName);
   if (parsed === null) {
     const truncated = result.content.slice(0, 100);
     logAgentCall(kingdomName, tick, false, `unparseable JSON: "${truncated}"`);
-    return fallback;
+    return {
+      action: fallback,
+      feedback:
+        "your previous response was not a parseable JSON action — RATION executed by default",
+    };
   }
 
   // Inject sourceKingdom — the LLM doesn't send it
@@ -371,58 +388,68 @@ export async function callAgent(
     (parsed as Record<string, unknown>).sourceKingdom = kingdomName;
   }
 
-  const validated = validateAction(parsed, gameState);
+  const { action: validated, reason } = validateActionDetailed(parsed, gameState);
   if (validated === null) {
-    const actionType =
-      typeof parsed === "object" && parsed !== null
-        ? String((parsed as Record<string, unknown>).actionType ?? "unknown")
-        : "unknown";
-    logAgentCall(
-      kingdomName,
-      tick,
-      false,
-      `invalid action type "${actionType}"`,
-    );
-    return fallback;
+    logAgentCall(kingdomName, tick, false, `rejected: ${reason}`);
+    return {
+      action: fallback,
+      feedback: `your order was rejected (${reason}) — RATION executed instead`,
+    };
   }
 
   logAgentCall(kingdomName, tick, true);
-  return validated;
+  return { action: validated, feedback: null };
 }
 
 // ─── Batch Call ────────────────────────────────────────────────────────────
 
+export interface AgentPhaseResult {
+  actions: Record<string, Action>;
+  /** Per-kingdom failure feedback for orders that fell back to RATION. */
+  feedback: Record<string, string>;
+}
+
 export async function callAllAgents(
   gameState: GameState,
   config: AgentConfig,
-): Promise<Record<string, Action>> {
+): Promise<AgentPhaseResult> {
   const aliveKingdoms = Object.values(gameState.kingdoms).filter(
     (k) => k.alive,
   );
 
   const entries = await Promise.all(
-    aliveKingdoms.map(async (kingdom): Promise<[string, Action]> => {
+    aliveKingdoms.map(async (kingdom): Promise<[string, AgentTurn]> => {
       try {
         const perception = generatePerception(kingdom.name, gameState);
-        const action = await callAgent(
+        const turn = await callAgent(
           kingdom.name,
           perception,
           config,
           gameState,
           gameState.tick,
         );
-        return [kingdom.name, action];
+        return [kingdom.name, turn];
       } catch {
-        return [kingdom.name, getFallbackAction(kingdom.name)];
+        return [
+          kingdom.name,
+          {
+            action: getFallbackAction(kingdom.name),
+            feedback: "your order was lost (internal error) — RATION executed by default",
+          },
+        ];
       }
     }),
   );
 
-  const result: Record<string, Action> = {};
-  for (const [name, action] of entries) {
-    result[name] = action;
+  const actions: Record<string, Action> = {};
+  const feedback: Record<string, string> = {};
+  for (const [name, turn] of entries) {
+    actions[name] = turn.action;
+    if (turn.feedback !== null) {
+      feedback[name] = turn.feedback;
+    }
   }
-  return result;
+  return { actions, feedback };
 }
 
 export default callAllAgents;
