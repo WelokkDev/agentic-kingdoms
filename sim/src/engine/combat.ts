@@ -10,8 +10,9 @@ export function resolveCombat(
   rng: () => number,
 ): CombatResult {
   const attackPower = getArmyEffectivePower(attacker);
-  const defensePower =
-    getArmyEffectivePower(defender) * TERRAIN_DEFENSE_BONUS[targetTile.tileType];
+  const terrainBonus = TERRAIN_DEFENSE_BONUS[targetTile.tileType] +
+    (targetTile.fortified ? 0.3 : 0);
+  const defensePower = getArmyEffectivePower(defender) * terrainBonus;
 
   const ratio = attackPower / defensePower;
 
@@ -102,7 +103,7 @@ export function transferTile(
   // Update the tile
   const updatedTiles: Record<string, Tile> = {
     ...map.tiles,
-    [tileId]: { ...tile, owner: newOwner },
+    [tileId]: { ...tile, owner: newOwner, fortified: false, fortifyExpiresAt: 0 },
   };
 
   const updatedMap: MapGrid = { ...map, tiles: updatedTiles };

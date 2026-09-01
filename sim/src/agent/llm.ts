@@ -8,19 +8,34 @@ import {
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
+export type Provider = "openrouter" | "anthropic";
+
 export interface AgentConfig {
+  provider: Provider;
   model: string;
   timeoutMs: number;
   maxRetries: number;
   apiKey: string;
+  /** Required for identity-linked Anthropic API keys; null otherwise. */
+  workspaceId: string | null;
 }
 
 interface OpenRouterRequest {
   model: string;
   max_tokens: number;
-  temperature: number;
+  temperature?: number;
   messages: Array<{ role: "system" | "user"; content: string }>;
 }
+
+interface AnthropicRequest {
+  model: string;
+  max_tokens: number;
+  temperature?: number;
+  system: string;
+  messages: Array<{ role: "user"; content: string }>;
+}
+
+type LLMRequest = OpenRouterRequest | AnthropicRequest;
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -36,12 +51,14 @@ RATION: reduces food and water consumption by 30% this tick. Morale -0.15.
 TRADE_OFFER: propose resource exchange. Target has 2 ticks to respond or it expires.
 TRADE_ACCEPT: accept an outstanding offer shown in your OFFERS section.
 NEGOTIATE: sends a message. No immediate mechanical effect.
+FORTIFY: costs materials:5. Strengthens one owned border tile defense for 5 ticks.
+THREATEN: demand resources from a kingdom. Sets relationship to HOSTILE. Target sees it in OFFERS.
+AID: send resources to another kingdom with no return. Builds goodwill.
 Tile types: farmland→food, mountain→materials, river/wetland→water, coastal→food+water (Thessan gets +20% on received trades)
 Deficit reduces population each tick. Army requires food+materials to avoid desertion.
 War exhaustion: morale and materials drain each tick you remain AT_WAR.
 
 ACTION SCHEMA:
-{ "actionType": "PASS" }
 { "actionType": "RATION" }
 { "actionType": "RECRUIT" }
 { "actionType": "EXPAND", "targetTileId": "<id>" }
@@ -50,6 +67,9 @@ ACTION SCHEMA:
 { "actionType": "TRADE_OFFER", "targetKingdom": "<name>", "offer": {"food":0,"water":0,"materials":0}, "request": {"food":0,"water":0,"materials":0} }
 { "actionType": "TRADE_ACCEPT", "targetKingdom": "<name>" }
 { "actionType": "TRADE_REJECT", "targetKingdom": "<name>" }
+{ "actionType": "FORTIFY", "targetTileId": "<owned_border_tile_id>" }
+{ "actionType": "THREATEN", "targetKingdom": "<name>", "request": {"food":0,"water":0,"materials":0}, "message": "<optional ultimatum>" }
+{ "actionType": "AID", "targetKingdom": "<name>", "offer": {"food":0,"water":0,"materials":0} }
 
 Rules:
 - Respond with one JSON object only
@@ -57,44 +77,115 @@ Rules:
 - targetKingdom must be a kingdom name visible in your perception
 - offer and request must have at least one non-zero value between them
 Resource deficit kills population. Population collapse eliminates your kingdom.
-Inaction during deficit accelerates collapse. PASS is always available but is
-rarely the right choice.`;
+Inaction during deficit accelerates collapse. You must act every tick.`;
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
 const RETRY_DELAY_MS = 500;
 
+const DEFAULT_MODELS: Record<Provider, string> = {
+  openrouter: "meta-llama/llama-3.3-70b-instruct:free",
+  anthropic: "claude-haiku-4-5",
+};
+
+const KEY_NAMES: Record<Provider, string> = {
+  openrouter: "OPENROUTER_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+};
+
+// Sampling params (temperature/top_p/top_k) were removed on these Anthropic
+// model families — sending temperature returns HTTP 400. Haiku 4.5 and the
+// OpenRouter models still accept it. Matched with includes() so a slug like
+// "anthropic/claude-opus-5" is caught on the OpenRouter path too.
+const NO_SAMPLING_MODELS = [
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-sonnet-5",
+  "claude-fable-5",
+  "claude-mythos-5",
+];
+
 // ─── Config Factory ────────────────────────────────────────────────────────
+
+function readApiKey(provider: Provider): string {
+  if (provider === "openrouter") {
+    return process.env.OPENROUTER_API_KEY ?? process.env.OPENROUTER_KEY ?? "";
+  }
+  return process.env.ANTHROPIC_API_KEY ?? "";
+}
+
+// LLM_PROVIDER wins when set. Otherwise pick by whichever key is present,
+// OpenRouter first. The explicit override exists so a typo'd OpenRouter key
+// name cannot silently fall through onto the paid Anthropic path.
+export function resolveProvider(): Provider | null {
+  const explicit = process.env.LLM_PROVIDER?.toLowerCase();
+  if (explicit === "openrouter" || explicit === "anthropic") {
+    return explicit;
+  }
+  if (readApiKey("openrouter")) return "openrouter";
+  if (readApiKey("anthropic")) return "anthropic";
+  return null;
+}
 
 export function createAgentConfig(
   overrides?: Partial<AgentConfig>,
 ): AgentConfig {
-  const config: AgentConfig = {
-    model: "google/gemini-flash-1.5",
-    timeoutMs: 8000,
-    maxRetries: 1,
-    apiKey: process.env.OPENROUTER_API_KEY ?? "",
-    ...overrides,
-  };
+  const provider = overrides?.provider ?? resolveProvider();
 
-  if (!config.apiKey) {
+  if (provider === null) {
     throw new Error(
-      "OPENROUTER_API_KEY environment variable is required but not set.",
+      "No LLM API key found. Set OPENROUTER_API_KEY (or OPENROUTER_KEY) to use " +
+        "OpenRouter, or ANTHROPIC_API_KEY to use Anthropic directly. " +
+        "Set LLM_PROVIDER=openrouter|anthropic to choose explicitly.",
     );
   }
 
-  return config;
+  const apiKey = overrides?.apiKey ?? readApiKey(provider);
+  if (!apiKey) {
+    throw new Error(
+      `Provider resolved to "${provider}" but ${KEY_NAMES[provider]} is not set.`,
+    );
+  }
+
+  return {
+    provider,
+    model: DEFAULT_MODELS[provider],
+    timeoutMs: 15000,
+    maxRetries: 2,
+    apiKey,
+    workspaceId: process.env.ANTHROPIC_WORKSPACE_ID ?? null,
+    ...overrides,
+  };
 }
 
 // ─── Pure Helpers ──────────────────────────────────────────────────────────
 
+export function supportsSampling(model: string): boolean {
+  return !NO_SAMPLING_MODELS.some((m) => model.includes(m));
+}
+
 export function buildRequestBody(
   perception: string,
   config: AgentConfig,
-): OpenRouterRequest {
+): LLMRequest {
+  const temperature = supportsSampling(config.model) ? 0.7 : undefined;
+
+  if (config.provider === "anthropic") {
+    return {
+      model: config.model,
+      max_tokens: 400,
+      ...(temperature === undefined ? {} : { temperature }),
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: perception }],
+    };
+  }
+
   return {
     model: config.model,
-    max_tokens: 150,
-    temperature: 0.7,
+    max_tokens: 400,
+    ...(temperature === undefined ? {} : { temperature }),
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: perception },
@@ -145,40 +236,94 @@ export function logAgentCall(
 
 // ─── Core API Call ─────────────────────────────────────────────────────────
 
-async function fetchFromOpenRouter(
-  body: OpenRouterRequest,
-  config: AgentConfig,
-): Promise<string | null> {
-  const response = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
+function requestHeaders(config: AgentConfig): Record<string, string> {
+  if (config.provider === "anthropic") {
+    const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
+      "x-api-key": config.apiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+    };
+    // Identity-linked API keys reject requests without a workspace id
+    if (config.workspaceId) {
+      headers["anthropic-workspace-id"] = config.workspaceId;
+    }
+    return headers;
+  }
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${config.apiKey}`,
+  };
+}
+
+function extractContent(provider: Provider, data: unknown): string | null {
+  if (provider === "anthropic") {
+    const body = data as { content?: Array<{ type?: string; text?: string }> };
+    return body.content?.find((b) => b.type === "text")?.text ?? null;
+  }
+
+  const body = data as { choices?: Array<{ message?: { content?: string } }> };
+  return body.choices?.[0]?.message?.content ?? null;
+}
+
+async function fetchFromProvider(
+  body: LLMRequest,
+  config: AgentConfig,
+): Promise<{ content: string | null; status: number; errorDetail: string | null }> {
+  const url = config.provider === "anthropic" ? ANTHROPIC_URL : OPENROUTER_URL;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: requestHeaders(config),
     body: JSON.stringify(body),
   });
 
   if (!response.ok) {
-    return null;
+    // Surface the API's error message — a bare status code hides the cause
+    let errorDetail: string | null = null;
+    try {
+      const errBody = (await response.json()) as {
+        error?: { message?: string };
+      };
+      errorDetail = errBody.error?.message?.slice(0, 140) ?? null;
+    } catch {
+      // Non-JSON error body — leave detail null
+    }
+    return { content: null, status: response.status, errorDetail };
   }
 
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+  const data = (await response.json()) as unknown;
+  return {
+    content: extractContent(config.provider, data),
+    status: response.status,
+    errorDetail: null,
   };
-  return data.choices?.[0]?.message?.content ?? null;
 }
 
 async function fetchWithRetry(
-  body: OpenRouterRequest,
+  body: LLMRequest,
   config: AgentConfig,
 ): Promise<{ content: string | null; failReason: string | null }> {
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     try {
-      const content = await fetchFromOpenRouter(body, config);
-      if (content === null) {
-        return { content: null, failReason: "non-200 response" };
+      const result = await fetchFromProvider(body, config);
+      if (result.content !== null) {
+        return { content: result.content, failReason: null };
       }
-      return { content, failReason: null };
+      // Retry on 429 (rate limit) and 529 (Anthropic overloaded) — transient
+      if (
+        (result.status === 429 || result.status === 529) &&
+        attempt < config.maxRetries
+      ) {
+        const backoff = RETRY_DELAY_MS * Math.pow(2, attempt);
+        await new Promise((r) => setTimeout(r, backoff));
+        continue;
+      }
+      return {
+        content: null,
+        failReason: result.errorDetail
+          ? `HTTP ${result.status}: ${result.errorDetail}`
+          : `HTTP ${result.status}`,
+      };
     } catch {
       if (attempt < config.maxRetries) {
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));

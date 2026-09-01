@@ -349,10 +349,15 @@ function formatEvent(e: Event): string[] {
     case EventType.DIPLOMACY: {
       const source = e.kingdomsInvolved[0];
       const target = e.kingdomsInvolved[1];
-      const msg = e.data.message as string;
-      const sourceColored = colorKingdom(source.toUpperCase(), source);
-      const targetColored = colorKingdom(target.toUpperCase(), target);
-      lines.push(` ${tickStr} ${sourceColored} \u2192 ${targetColored}`);
+      const rawMsg = e.data.message;
+      const msg = typeof rawMsg === "string" ? rawMsg : e.description;
+      const sourceColored = source ? colorKingdom(source.toUpperCase(), source) : "";
+      if (target) {
+        const targetColored = colorKingdom(target.toUpperCase(), target);
+        lines.push(` ${tickStr} ${sourceColored} \u2192 ${targetColored}`);
+      } else {
+        lines.push(` ${tickStr} ${sourceColored}`);
+      }
       lines.push(`       ${DIM}"${truncate(msg, 50)}"${RESET}`);
       break;
     }

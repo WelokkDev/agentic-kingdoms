@@ -10,7 +10,7 @@ import {
   SimConfig,
   TickResult,
 } from "../core/types.js";
-import { buildMapGrid } from "../engine/map.js";
+import { buildMapGrid, resolveFortify, expireFortifications } from "../engine/map.js";
 import {
   computeProduction,
   computeConsumption,
@@ -40,6 +40,8 @@ import {
   resolveTradeReject,
   resolveNegotiate,
   resolveRation,
+  resolveThreat,
+  resolveAid,
   expireOutstandingOffers,
   updateDiplomaticStatus,
   initializeDiplomaticMemory,
@@ -243,6 +245,12 @@ export async function runTick(
   ctx.eventsThisTick.push(...expiryResult.events);
 
   // ═══════════════════════════════════════════════════════════════════════
+  // FORTIFICATION EXPIRY (step 0.5): Clear expired tile fortifications
+  // ═══════════════════════════════════════════════════════════════════════
+
+  gameState = expireFortifications(gameState);
+
+  // ═══════════════════════════════════════════════════════════════════════
   // RATION PASS (step 1): Identify RATION actions from previous tick
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -375,6 +383,14 @@ export async function runTick(
     if (event) ctx.eventsThisTick.push(event);
   }
 
+  // Step 13a: THREATEN actions
+  for (const action of Object.values(actions)) {
+    if (action.actionType !== ActionType.THREATEN) continue;
+    const { gameState: gs, event } = resolveThreat(action, gameState);
+    gameState = gs;
+    if (event) ctx.eventsThisTick.push(event);
+  }
+
   // Step 14: TRADE_ACCEPT / TRADE_REJECT actions
   for (const action of Object.values(actions)) {
     if (action.actionType === ActionType.TRADE_ACCEPT) {
@@ -402,6 +418,22 @@ export async function runTick(
     if (action.actionType !== ActionType.RECRUIT) continue;
     const updated = recruitTroops(gameState.kingdoms[name], RECRUIT_AMOUNT);
     gameState = setKingdom(gameState, name, updated);
+  }
+
+  // Step 15a: AID actions
+  for (const action of Object.values(actions)) {
+    if (action.actionType !== ActionType.AID) continue;
+    const { gameState: gs, event } = resolveAid(action, gameState);
+    gameState = gs;
+    if (event) ctx.eventsThisTick.push(event);
+  }
+
+  // Step 15b: FORTIFY actions
+  for (const action of Object.values(actions)) {
+    if (action.actionType !== ActionType.FORTIFY) continue;
+    const { gameState: gs, event } = resolveFortify(action, gameState);
+    gameState = gs;
+    if (event) ctx.eventsThisTick.push(event);
   }
 
   // Step 16: NEGOTIATE actions

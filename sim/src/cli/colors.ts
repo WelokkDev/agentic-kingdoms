@@ -33,6 +33,7 @@ export const KINGDOM_SYMBOLS: Record<string, string> = {
 
 /** Strips all ANSI escape codes from a string. Used for length calculations. */
 export function stripAnsi(str: string): string {
+  if (typeof str !== "string") return "";
   // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }

@@ -1,4 +1,14 @@
-import { TileType, MapGrid, Tile } from "../core/types.js";
+import {
+  TileType,
+  MapGrid,
+  Tile,
+  Action,
+  Event,
+  EventType,
+  GameState,
+  Kingdom,
+} from "../core/types.js";
+import { createEvent } from "./logger.js";
 
 const GRID_SIZE = 7;
 
@@ -218,6 +228,8 @@ export function buildMapGrid(): MapGrid {
         tileType: TILE_TYPE_MAP[id],
         owner: OWNER_MAP[id] ?? null,
         contested: false,
+        fortified: false,
+        fortifyExpiresAt: 0,
       };
       row.push(id);
     }
@@ -235,6 +247,97 @@ export function buildMapGrid(): MapGrid {
   }
 
   return map;
+}
+
+/** Cost in materials to fortify a border tile. */
+export const FORTIFY_COST = 5;
+
+/** Number of ticks a fortification lasts. */
+export const FORTIFY_DURATION = 5;
+
+/** Fortification defense bonus added to terrain defense. */
+export const FORTIFY_DEFENSE_BONUS = 0.3;
+
+/**
+ * Resolves a FORTIFY action: deducts materials, sets tile fortification state.
+ * Pure function — takes state in, returns state out.
+ */
+export function resolveFortify(
+  action: Action,
+  gameState: GameState,
+): { gameState: GameState; event: Event | null } {
+  const { sourceKingdom, targetTileId } = action;
+
+  if (!targetTileId) return { gameState, event: null };
+
+  const tile = gameState.map.tiles[targetTileId];
+  if (!tile || tile.owner !== sourceKingdom) return { gameState, event: null };
+
+  // Belt-and-suspenders: verify it's a border tile
+  const adjacency = gameState.map.adjacency[targetTileId];
+  const isBorder = adjacency.some((adjId) => gameState.map.tiles[adjId].owner !== sourceKingdom);
+  if (!isBorder) return { gameState, event: null };
+
+  const kingdom = gameState.kingdoms[sourceKingdom];
+  if (kingdom.stockpile.materials < FORTIFY_COST) return { gameState, event: null };
+
+  // Deduct materials
+  const updatedKingdom: Kingdom = {
+    ...kingdom,
+    stockpile: {
+      ...kingdom.stockpile,
+      materials: kingdom.stockpile.materials - FORTIFY_COST,
+    },
+  };
+
+  // Set tile fortification
+  const updatedTile: Tile = {
+    ...tile,
+    fortified: true,
+    fortifyExpiresAt: gameState.tick + FORTIFY_DURATION,
+  };
+
+  const updatedGameState: GameState = {
+    ...gameState,
+    kingdoms: { ...gameState.kingdoms, [sourceKingdom]: updatedKingdom },
+    map: {
+      ...gameState.map,
+      tiles: { ...gameState.map.tiles, [targetTileId]: updatedTile },
+    },
+  };
+
+  const event = createEvent(
+    gameState.tick,
+    EventType.DIPLOMACY,
+    [sourceKingdom],
+    `${sourceKingdom} reinforces its ${tile.tileType.toLowerCase()} at ${targetTileId}. Border defenses strengthened.`,
+    { tileId: targetTileId, tileType: tile.tileType },
+  );
+
+  return { gameState: updatedGameState, event };
+}
+
+/**
+ * Expires fortifications whose duration has elapsed.
+ * Called once per tick before resource production.
+ */
+export function expireFortifications(gameState: GameState): GameState {
+  let tilesChanged = false;
+  const updatedTiles: Record<string, Tile> = { ...gameState.map.tiles };
+
+  for (const [id, tile] of Object.entries(gameState.map.tiles)) {
+    if (tile.fortified && tile.fortifyExpiresAt <= gameState.tick) {
+      updatedTiles[id] = { ...tile, fortified: false, fortifyExpiresAt: 0 };
+      tilesChanged = true;
+    }
+  }
+
+  if (!tilesChanged) return gameState;
+
+  return {
+    ...gameState,
+    map: { ...gameState.map, tiles: updatedTiles },
+  };
 }
 
 export default buildMapGrid;

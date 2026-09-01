@@ -162,11 +162,14 @@ function setupCleanup(): void {
 // ─── Render Callback ──────────────────────────────────────────────────────
 
 let quitRequested = false;
+let lastTickResult: TickResult | null = null;
 
 function createRenderCallback(
   mode: RenderMode,
 ): (result: TickResult) => Promise<void> {
   return async (result: TickResult): Promise<void> => {
+    lastTickResult = result;
+
     // Check for elimination events — render banner
     for (const e of result.eventsThisTick) {
       if (e.eventType === EventType.KINGDOM_ELIMINATED) {
@@ -271,7 +274,7 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error(
       (err as Error).message ??
-        "Failed to create agent config. Is OPENROUTER_API_KEY set?",
+        "Failed to create agent config. Is OPENROUTER_API_KEY or ANTHROPIC_API_KEY set?",
     );
     process.exit(1);
   }
@@ -291,7 +294,7 @@ async function main(): Promise<void> {
     // Hide cursor
     process.stdout.write("\x1b[?25l");
 
-    console.log(`Seed: ${simConfig.seed}  Ticks: ${simConfig.maxTicks}  Model: ${agentConfig.model}`);
+    console.log(`Seed: ${simConfig.seed}  Ticks: ${simConfig.maxTicks}  Provider: ${agentConfig.provider}  Model: ${agentConfig.model}`);
     console.log(`Mode: ${mode}  Press [q] to quit\n`);
   }
 
@@ -299,6 +302,16 @@ async function main(): Promise<void> {
 
   // Run simulation with render callback
   await runSimulation(simConfig, agentConfig, renderCallback, () => quitRequested);
+
+  // End-of-run reporting: print summary and persist the sim log JSON.
+  if (lastTickResult) {
+    const finalState = lastTickResult.gameState;
+    renderEndSummary(finalState, simConfig);
+    const log = buildSimLog(finalState, simConfig);
+    const logPath = `sim_log_${simConfig.seed}_${Date.now()}.json`;
+    fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
+    console.log(`Wrote ${logPath}`);
+  }
 
   cleanup();
 }

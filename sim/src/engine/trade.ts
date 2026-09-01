@@ -22,6 +22,7 @@ function defaultDiplomaticMemory(): DiplomaticMemory {
     timesAttackedUs: 0,
     timesWeAttacked: 0,
     outstandingOffer: null,
+    outstandingThreat: null,
     ticksAtWar: 0,
   };
 }
@@ -391,7 +392,7 @@ export function resolveNegotiate(
   return { gameState: { ...gameState, kingdoms }, event };
 }
 
-/** Clears outstanding offers that are more than 2 ticks old. Called once per tick before resolution. */
+/** Clears outstanding offers and threats that are more than 2 ticks old. Called once per tick before resolution. */
 export function expireOutstandingOffers(gameState: GameState): { gameState: GameState; events: Event[] } {
   let kingdoms = { ...gameState.kingdoms };
   const events: Event[] = [];
@@ -413,6 +414,22 @@ export function expireOutstandingOffers(gameState: GameState): { gameState: Game
             kingdomName,
             targetName,
             "trade offer expired — no response after 2 ticks",
+          ),
+        );
+      }
+      if (
+        mem.outstandingThreat !== null &&
+        mem.lastInteractionTick < gameState.tick - 2
+      ) {
+        kingdoms = updateMemory(kingdoms, kingdomName, targetName, {
+          outstandingThreat: null,
+        });
+        events.push(
+          logDiplomacy(
+            gameState.tick,
+            kingdomName,
+            targetName,
+            "threat expired — no follow-through after 2 ticks",
           ),
         );
       }
@@ -488,6 +505,154 @@ export function resolveRation(
     [sourceKingdom],
     `${sourceKingdom} implements rationing. Consumption reduced but morale suffers.`,
     {},
+  );
+
+  return { gameState: { ...gameState, kingdoms }, event };
+}
+
+/**
+ * Resolves a THREATEN action: stores the threat in the threatener's
+ * diplomaticMemory for the target and transitions status to HOSTILE symmetrically.
+ * No resource cost. Purely a perception signal.
+ */
+export function resolveThreat(
+  action: Action,
+  gameState: GameState,
+): { gameState: GameState; event: Event | null } {
+  const { sourceKingdom, targetKingdom, request, message } = action;
+
+  if (!targetKingdom || !request) {
+    return { gameState, event: null };
+  }
+
+  const target = gameState.kingdoms[targetKingdom];
+  if (!target || !target.alive) {
+    return { gameState, event: null };
+  }
+
+  // Store threat on threatener's memory about target
+  let kingdoms = updateMemory(
+    { ...gameState.kingdoms },
+    sourceKingdom,
+    targetKingdom,
+    { outstandingThreat: action, lastInteractionTick: gameState.tick },
+  );
+  kingdoms = updateMemory(kingdoms, targetKingdom, sourceKingdom, {
+    lastInteractionTick: gameState.tick,
+  });
+
+  // Transition to HOSTILE symmetrically (if not already AT_WAR)
+  const currentStatus = kingdoms[sourceKingdom].diplomaticMemory[targetKingdom].status;
+  if (
+    currentStatus === DiplomaticStatus.NEUTRAL ||
+    currentStatus === DiplomaticStatus.TRADE_PARTNER
+  ) {
+    kingdoms = setStatusSymmetric(kingdoms, sourceKingdom, targetKingdom, DiplomaticStatus.HOSTILE);
+  }
+
+  const demandParts: string[] = [];
+  if (request.food > 0) demandParts.push(`${request.food} food`);
+  if (request.water > 0) demandParts.push(`${request.water} water`);
+  if (request.materials > 0) demandParts.push(`${request.materials} materials`);
+  const demandStr = demandParts.join(", ");
+  const msgSuffix = message ? ` "${message}"` : "";
+  const description = `${sourceKingdom} issues an ultimatum to ${targetKingdom}: surrender ${demandStr} or face war.${msgSuffix}`;
+
+  const event = createEvent(
+    gameState.tick,
+    EventType.DIPLOMACY,
+    [sourceKingdom, targetKingdom],
+    description,
+    { demand: request, message },
+  );
+
+  return { gameState: { ...gameState, kingdoms }, event };
+}
+
+/**
+ * Resolves an AID action: one-sided resource transfer to another kingdom.
+ * Deducts from sender, adds to receiver (with tradeEfficiency), increments
+ * tradeDealsCompleted, and grants morale +0.05 to recipient.
+ */
+export function resolveAid(
+  action: Action,
+  gameState: GameState,
+): { gameState: GameState; event: Event | null } {
+  const { sourceKingdom, targetKingdom, offer } = action;
+
+  if (!targetKingdom || !offer) {
+    return { gameState, event: null };
+  }
+  if (!hasNonZeroResource(offer)) {
+    return { gameState, event: null };
+  }
+
+  const source = gameState.kingdoms[sourceKingdom];
+  const target = gameState.kingdoms[targetKingdom];
+  if (!target || !target.alive) {
+    return { gameState, event: null };
+  }
+
+  if (!canAfford(source.stockpile, offer)) {
+    return { gameState, event: null };
+  }
+
+  const eff = target.tradeEfficiency;
+
+  let kingdoms: Record<string, Kingdom> = {
+    ...gameState.kingdoms,
+    [sourceKingdom]: {
+      ...source,
+      stockpile: {
+        food: Math.max(0, source.stockpile.food - offer.food),
+        water: Math.max(0, source.stockpile.water - offer.water),
+        materials: Math.max(0, source.stockpile.materials - offer.materials),
+      },
+    },
+    [targetKingdom]: {
+      ...target,
+      stockpile: {
+        food: target.stockpile.food + offer.food * eff,
+        water: target.stockpile.water + offer.water * eff,
+        materials: target.stockpile.materials + offer.materials * eff,
+      },
+      morale: Math.min(1.5, target.morale + 0.05),
+    },
+  };
+
+  // Increment tradeDealsCompleted on both sides
+  const sourceMem = kingdoms[sourceKingdom].diplomaticMemory[targetKingdom] ?? defaultDiplomaticMemory();
+  const targetMem = kingdoms[targetKingdom].diplomaticMemory[sourceKingdom] ?? defaultDiplomaticMemory();
+  const newTradeCount = sourceMem.tradeDealsCompleted + 1;
+
+  kingdoms = updateMemory(kingdoms, sourceKingdom, targetKingdom, {
+    tradeDealsCompleted: newTradeCount,
+    lastInteractionTick: gameState.tick,
+  });
+  kingdoms = updateMemory(kingdoms, targetKingdom, sourceKingdom, {
+    tradeDealsCompleted: newTradeCount,
+    lastInteractionTick: gameState.tick,
+  });
+
+  // Diplomatic status transition: NEUTRAL → TRADE_PARTNER after 3 completed deals
+  const currentStatus = sourceMem.status;
+  if (currentStatus === DiplomaticStatus.NEUTRAL && newTradeCount >= 3) {
+    kingdoms = setStatusSymmetric(kingdoms, sourceKingdom, targetKingdom, DiplomaticStatus.TRADE_PARTNER);
+  }
+
+  // Describe the aid
+  const parts: string[] = [];
+  if (offer.food > 0) parts.push(`${offer.food} food`);
+  if (offer.water > 0) parts.push(`${offer.water} water`);
+  if (offer.materials > 0) parts.push(`${offer.materials} materials`);
+  const description = `${sourceKingdom} sends aid to ${targetKingdom}: ${parts.join(", ")}.`;
+
+  const event = createEvent(
+    gameState.tick,
+    EventType.TRADE,
+    [sourceKingdom, targetKingdom],
+    description,
+    { offer, sourceKingdom, targetKingdom },
   );
 
   return { gameState: { ...gameState, kingdoms }, event };

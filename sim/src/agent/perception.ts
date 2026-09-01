@@ -221,9 +221,27 @@ export function generatePerception(
 
   // ── BORDERS ──
   const borderLines = getBorderLines(kingdomName, gameState);
-  if (borderLines.length > 0) {
+  // Add fortification markers for own border tiles
+  const ownFortifiedLines: string[] = [];
+  for (const tileId of kingdom.tileIds) {
+    const t = map.tiles[tileId];
+    if (!t.fortified) continue;
+    // Only show for border tiles (adjacent to non-owned tile)
+    const isBorder = gameState.map.adjacency[tileId].some(
+      (adjId) => gameState.map.tiles[adjId].owner !== kingdomName,
+    );
+    if (!isBorder) continue;
+    const remaining = t.fortifyExpiresAt - tick;
+    if (remaining > 0) {
+      ownFortifiedLines.push(
+        `\u2192 your ${t.tileType.toLowerCase()} at ${tileId} [fortified, ${remaining} ticks remaining]`,
+      );
+    }
+  }
+  if (borderLines.length > 0 || ownFortifiedLines.length > 0) {
     lines.push("BORDERS");
     lines.push(...borderLines);
+    lines.push(...ownFortifiedLines);
     lines.push("");
   }
 
@@ -259,18 +277,36 @@ export function generatePerception(
   // ── OFFERS ──
   // Offers directed at this kingdom live in the *offerer's* diplomaticMemory
   // entry for this kingdom (offerer.diplomaticMemory[kingdomName].outstandingOffer)
+  // Threats live in outstandingThreat on the same path.
   const offerLines: string[] = [];
   for (const [otherName, otherK] of Object.entries(gameState.kingdoms)) {
     if (otherName === kingdomName || !otherK.alive) continue;
     const mem = otherK.diplomaticMemory[kingdomName];
-    if (!mem || !mem.outstandingOffer) continue;
-    const offer = mem.outstandingOffer;
-    if (offer.offer && offer.request) {
-      const giveStr = formatResourcesCompact(offer.offer);
-      const recvStr = formatResourcesCompact(offer.request);
-      offerLines.push(
-        `${otherName} \u2192 you: give ${giveStr} \u2192 receive ${recvStr}`,
-      );
+    if (!mem) continue;
+
+    // Trade offers
+    if (mem.outstandingOffer) {
+      const offerAction = mem.outstandingOffer;
+      if (offerAction.offer && offerAction.request) {
+        const giveStr = formatResourcesCompact(offerAction.offer);
+        const recvStr = formatResourcesCompact(offerAction.request);
+        offerLines.push(
+          `${otherName} \u2192 you: give ${giveStr} \u2192 receive ${recvStr}`,
+        );
+      }
+    }
+
+    // Threats
+    if (mem.outstandingThreat) {
+      const threat = mem.outstandingThreat;
+      if (threat.request) {
+        const demandStr = formatResourcesCompact(threat.request);
+        const remaining = Math.max(0, 2 - (tick - mem.lastInteractionTick));
+        const msgPart = threat.message ? ` "${threat.message}"` : "";
+        offerLines.push(
+          `\u26A0 THREAT \u2014 ${otherName} demands: ${demandStr} or face consequences.${msgPart} (${remaining} ticks to respond)`,
+        );
+      }
     }
   }
   if (offerLines.length > 0) {

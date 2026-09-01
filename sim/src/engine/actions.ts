@@ -1,11 +1,12 @@
 import {
   Action,
   ActionType,
+  DiplomaticStatus,
   GameState,
   Kingdom,
   Resources,
 } from "../core/types.js";
-import { getAdjacentEnemyTiles } from "./map.js";
+import { getAdjacentEnemyTiles, getKingdomBorderTiles, FORTIFY_COST } from "./map.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -127,7 +128,46 @@ export function validateAction(
       return null;
   }
 
-  // NEGOTIATE, RATION, PASS: always valid if sourceKingdom is valid (already checked above)
+  if (actionType === ActionType.FORTIFY) {
+    if (!targetTileId) return null;
+    const tile = gameState.map.tiles[targetTileId];
+    if (!tile || tile.owner !== sourceKingdom) return null;
+    // Must be a border tile
+    const borderTiles = getKingdomBorderTiles(sourceKingdom, gameState.map);
+    const isBorder = borderTiles.some((t) => t.id === targetTileId);
+    if (!isBorder) return null;
+    if (source.stockpile.materials < FORTIFY_COST) return null;
+  }
+
+  if (actionType === ActionType.THREATEN) {
+    if (!targetKingdom) return null;
+    const target = gameState.kingdoms[targetKingdom];
+    if (!target || !target.alive) return null;
+    if (targetKingdom === sourceKingdom) return null;
+    if (!request) return null;
+    const totalRequest = request.food + request.water + request.materials;
+    if (totalRequest === 0) return null;
+    // Cannot threaten an ALLIED kingdom
+    const mem = source.diplomaticMemory[targetKingdom];
+    if (mem && mem.status === DiplomaticStatus.ALLIED) return null;
+  }
+
+  if (actionType === ActionType.AID) {
+    if (!targetKingdom) return null;
+    const target = gameState.kingdoms[targetKingdom];
+    if (!target || !target.alive) return null;
+    if (targetKingdom === sourceKingdom) return null;
+    if (!offer) return null;
+    const totalOffer = offer.food + offer.water + offer.materials;
+    if (totalOffer === 0) return null;
+    if (
+      source.stockpile.food < offer.food ||
+      source.stockpile.water < offer.water ||
+      source.stockpile.materials < offer.materials
+    ) return null;
+  }
+
+  // NEGOTIATE, RATION: always valid if sourceKingdom is valid (already checked above)
 
   return {
     actionType,
@@ -140,10 +180,10 @@ export function validateAction(
   };
 }
 
-/** Returns a PASS action for the given kingdom. */
+/** Returns a RATION fallback action for the given kingdom (used when LLM fails). */
 export function getFallbackAction(kingdomName: string): Action {
   return {
-    actionType: ActionType.PASS,
+    actionType: ActionType.RATION,
     sourceKingdom: kingdomName,
     targetKingdom: null,
     targetTileId: null,
@@ -190,7 +230,6 @@ export function getValidActionTypes(
     ActionType.TRADE_OFFER,
     ActionType.NEGOTIATE,
     ActionType.RATION,
-    ActionType.PASS,
   ];
 
   // ATTACK: requires adjacent enemy tiles owned by another alive kingdom and army > 0
@@ -234,6 +273,43 @@ export function getValidActionTypes(
   // RECRUIT: requires full batch cost
   if (kingdom.stockpile.food >= RECRUIT_AMOUNT && kingdom.stockpile.materials >= RECRUIT_AMOUNT * 2) {
     result.push(ActionType.RECRUIT);
+  }
+
+  // FORTIFY: requires border tiles and materials >= FORTIFY_COST
+  {
+    const borderTiles = getKingdomBorderTiles(kingdom.name, gameState.map);
+    if (borderTiles.length > 0 && kingdom.stockpile.materials >= FORTIFY_COST) {
+      result.push(ActionType.FORTIFY);
+    }
+  }
+
+  // THREATEN: requires alive non-allied neighbors
+  {
+    const hasThreatenableTarget = Object.keys(gameState.kingdoms).some((otherName) => {
+      if (otherName === kingdom.name) return false;
+      const otherK = gameState.kingdoms[otherName];
+      if (!otherK.alive) return false;
+      const mem = kingdom.diplomaticMemory[otherName];
+      return !mem || mem.status !== DiplomaticStatus.ALLIED;
+    });
+    if (hasThreatenableTarget) {
+      result.push(ActionType.THREATEN);
+    }
+  }
+
+  // AID: requires alive neighbors and at least one non-zero stockpile resource
+  {
+    const hasAliveNeighbor = Object.keys(gameState.kingdoms).some((otherName) => {
+      if (otherName === kingdom.name) return false;
+      return gameState.kingdoms[otherName].alive;
+    });
+    const hasResources =
+      kingdom.stockpile.food > 0 ||
+      kingdom.stockpile.water > 0 ||
+      kingdom.stockpile.materials > 0;
+    if (hasAliveNeighbor && hasResources) {
+      result.push(ActionType.AID);
+    }
   }
 
   return result;

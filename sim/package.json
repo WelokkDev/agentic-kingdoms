@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "sim": "tsc && node dist/cli/index.js",
+    "sim": "tsc && node --env-file=../.env dist/cli/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

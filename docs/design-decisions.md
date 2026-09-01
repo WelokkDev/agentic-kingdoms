@@ -383,13 +383,3 @@ Per tick, the terminal displays:
 - A separator line between ticks
 
 Full structured log exported to `sim_log.json` on completion.
-
----
-
-## What This Is NOT
-
-- Not a city builder — no internal city mechanics
-- Not a tech tree game — no research or upgrades
-- Not Risk — no dice-driven outcomes (except contested band)
-- Not scripted — no hardcoded strategies or predefined behaviors
-- Not a product — optimization is for simulation quality, not UX polish

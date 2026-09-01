@@ -2,10 +2,10 @@ import {
   Event,
   EventType,
   CombatResult,
+  Resources,
   TradeResult,
   TileType,
   Kingdom,
-  Resources,
 } from "../core/types.js";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -138,6 +138,67 @@ export function logTileExpanded(
     [kingdomName],
     description,
     { tileId, tileType }
+  );
+}
+
+/** Logs a fortification event. */
+export function logFortify(
+  tick: number,
+  kingdomName: string,
+  tileId: string,
+  tileType: TileType,
+): Event {
+  const description = `${kingdomName} reinforces its ${tileType.toLowerCase()} at ${tileId}. Border defenses strengthened.`;
+  return createEvent(
+    tick,
+    EventType.DIPLOMACY,
+    [kingdomName],
+    description,
+    { tileId, tileType },
+  );
+}
+
+/** Logs a threat event. */
+export function logThreat(
+  tick: number,
+  sourceKingdom: string,
+  targetKingdom: string,
+  demand: Resources,
+  message: string | null,
+): Event {
+  const parts: string[] = [];
+  if (demand.food > 0) parts.push(`${demand.food} food`);
+  if (demand.water > 0) parts.push(`${demand.water} water`);
+  if (demand.materials > 0) parts.push(`${demand.materials} materials`);
+  let description = `${sourceKingdom} issues an ultimatum to ${targetKingdom}: surrender ${parts.join(", ")} or face war.`;
+  if (message) description += ` "${message}"`;
+  return createEvent(
+    tick,
+    EventType.DIPLOMACY,
+    [sourceKingdom, targetKingdom],
+    description,
+    { demand, message },
+  );
+}
+
+/** Logs an aid event. */
+export function logAid(
+  tick: number,
+  sourceKingdom: string,
+  targetKingdom: string,
+  resources: Resources,
+): Event {
+  const parts: string[] = [];
+  if (resources.food > 0) parts.push(`${resources.food} food`);
+  if (resources.water > 0) parts.push(`${resources.water} water`);
+  if (resources.materials > 0) parts.push(`${resources.materials} materials`);
+  const description = `${sourceKingdom} sends aid to ${targetKingdom}: ${parts.join(", ")}.`;
+  return createEvent(
+    tick,
+    EventType.TRADE,
+    [sourceKingdom, targetKingdom],
+    description,
+    { resources, sourceKingdom, targetKingdom },
   );
 }
 

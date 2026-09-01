@@ -31,6 +31,8 @@ export interface Tile {
   tileType: TileType;
   owner: string | null;
   contested: boolean;
+  fortified: boolean;
+  fortifyExpiresAt: number;
 }
 
 /** Static per-tick resource yield for each terrain type. */
@@ -61,6 +63,7 @@ export interface DiplomaticMemory {
   timesAttackedUs: number;
   timesWeAttacked: number;
   outstandingOffer: Action | null;
+  outstandingThreat: Action | null;
   /** Consecutive ticks at AT_WAR status entering this tick. Resets to 0 on status transition away from AT_WAR only. */
   ticksAtWar: number;
 }
@@ -92,7 +95,9 @@ export enum ActionType {
   RATION = "RATION",
   EXPAND = "EXPAND",
   NEGOTIATE = "NEGOTIATE",
-  PASS = "PASS",
+  FORTIFY = "FORTIFY",
+  THREATEN = "THREATEN",
+  AID = "AID",
 }
 
 /** A single action chosen by an agent for one tick. */
