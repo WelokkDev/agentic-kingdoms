@@ -27,25 +27,29 @@ export function recruitTroops(kingdom: Kingdom, amount: number): Kingdom {
   };
 }
 
-/** Degrade or recover army effectiveness based on materials deficit/surplus. */
+/**
+ * Degrade or recover army effectiveness based on materials availability.
+ * Armies are supplied from stores, so effectiveness degrades only once the
+ * materials stockpile is empty.
+ */
 export function updateArmyEffectiveness(kingdom: Kingdom): Kingdom {
   const deficit = getDeficit(kingdom);
   const surplus = getSurplus(kingdom);
   let armyEffectiveness = kingdom.armyEffectiveness;
 
-  if (deficit.materials > 0) {
+  if (deficit.materials > 0 && kingdom.stockpile.materials <= 0) {
     armyEffectiveness = Math.max(0.5, armyEffectiveness * 0.95);
-  } else if (surplus.materials > 0) {
+  } else if (surplus.materials > 0 || kingdom.stockpile.materials > 0) {
     armyEffectiveness = Math.min(1.0, armyEffectiveness + 0.05);
   }
 
   return { ...kingdom, armyEffectiveness };
 }
 
-/** Apply desertion when kingdom has a food deficit. Morale scales the rate. */
+/** Apply desertion when the kingdom's food stores run dry. Morale scales the rate. */
 export function applyDesertion(kingdom: Kingdom): Kingdom {
   const deficit = getDeficit(kingdom);
-  if (deficit.food <= 0) {
+  if (deficit.food <= 0 || kingdom.stockpile.food > 0) {
     return kingdom;
   }
 

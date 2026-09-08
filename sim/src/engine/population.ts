@@ -1,22 +1,26 @@
 import { Kingdom } from "../core/types.js";
 import { getDeficit, getSurplus } from "./resources.js";
 
-/** Adjust population based on food/water surplus and deficit. */
+/**
+ * Adjust population based on food/water availability. Stockpiles buffer
+ * people: starvation only bites once the relevant store is empty.
+ */
 export function updatePopulation(kingdom: Kingdom): Kingdom {
   const surplus = getSurplus(kingdom);
   const deficit = getDeficit(kingdom);
 
   let population = kingdom.population;
 
-  if (surplus.food >= 10) {
+  const wellFed = kingdom.stockpile.food > kingdom.population * 2;
+  if (surplus.food >= 10 || wellFed) {
     population += 1;
   }
 
-  if (deficit.food > 0) {
+  if (deficit.food > 0 && kingdom.stockpile.food <= 0) {
     population -= deficit.food * 0.3;
   }
 
-  if (deficit.water > 0) {
+  if (deficit.water > 0 && kingdom.stockpile.water <= 0) {
     population -= deficit.water * 0.5;
   }
 
@@ -40,10 +44,10 @@ export function updateMorale(
   if (surplus.food > 0) {
     morale += 0.1;
   }
-  if (deficit.food > 0) {
+  if (deficit.food > 0 && kingdom.stockpile.food <= 0) {
     morale -= 0.1;
   }
-  if (deficit.water > 0) {
+  if (deficit.water > 0 && kingdom.stockpile.water <= 0) {
     morale -= 0.2;
   }
   if (tradeCompleted) {

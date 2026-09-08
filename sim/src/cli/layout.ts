@@ -98,7 +98,7 @@ export function drawBox(
   if (title) {
     const titleStr = ` ${title} `;
     const titleLen = stripAnsi(titleStr).length;
-    const remaining = Math.max(0, innerWidth - titleLen);
+    const remaining = Math.max(0, innerWidth - titleLen - 1); // -1: leading "─"
     result.push(
       `\u250C\u2500 ${title} ` + "\u2500".repeat(remaining) + "\u2510",
     );
@@ -171,7 +171,7 @@ export function drawHeader(
   const innerWidth = terminalWidth - 2;
   const titleStr = ` ${title} `;
   const titleLen = stripAnsi(titleStr).length;
-  const remaining = Math.max(0, innerWidth - titleLen);
+  const remaining = Math.max(0, innerWidth - titleLen - 1); // -1: leading "─"
   return `\u250C\u2500${BOLD}${titleStr}${RESET}` + "\u2500".repeat(remaining) + "\u2510";
 }
 

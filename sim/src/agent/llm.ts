@@ -55,7 +55,8 @@ FORTIFY: costs materials:5. Strengthens one owned border tile defense for 5 tick
 THREATEN: demand resources from a kingdom. Sets relationship to HOSTILE. Target sees it in OFFERS.
 AID: send resources to another kingdom with no return. Builds goodwill.
 Tile types: farmland→food, mountain→materials, river/wetland→water, coastal→food+water (Thessan gets +20% on received trades)
-Deficit reduces population each tick. Army requires food+materials to avoid desertion.
+Stockpiles feed your people: population starves and armies desert only when the store hits 0.
+Food stockpile above 2x population grows population +1/tick. Materials in store keep army effectiveness recovering.
 War exhaustion: morale and materials drain each tick you remain AT_WAR.
 
 ACTION SCHEMA:

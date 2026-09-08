@@ -227,6 +227,10 @@ function handleViewKey(key: string, result: TickResult): boolean {
       setView(state.currentView === "history" ? "dashboard" : "history");
       renderTick(result);
       return true;
+    case "d":
+      setView(state.currentView === "diplomacy" ? "dashboard" : "diplomacy");
+      renderTick(result);
+      return true;
     case "up":
       if (state.currentView === "history") {
         scrollHistory(-3);

@@ -179,9 +179,6 @@ export function initializeGameState(config: SimConfig): GameState {
 
     const baseKingdom: Kingdom = {
       name,
-      // Sized against total map yield: at pop 12 + army 5, the fully-expanded
-      // map produces ~84 food/tick vs ~85 demand — survivable, but structurally
-      // zero-sum once the land rush ends. Deficits are fixable by trade or war.
       population: 12,
       army: 5,
       armyEffectiveness: 1.0,

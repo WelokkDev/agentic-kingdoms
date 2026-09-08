@@ -1,9 +1,12 @@
 import {
+  Action,
+  ActionType,
   Event,
   EventType,
   GameState,
   Kingdom,
   MapGrid,
+  Resources,
   SimConfig,
   TileType,
   DiplomaticStatus,
@@ -14,12 +17,17 @@ import {
   BOLD,
   DIM,
   RED,
+  GREEN,
+  YELLOW,
+  CYAN,
   WHITE,
+  INVERSE,
   KINGDOM_COLORS,
   KINGDOM_SYMBOLS,
   colorKingdom,
   colorDelta,
   colorDeficitFlag,
+  colorPressure,
   stripAnsi,
 } from "./colors.js";
 import {
@@ -44,7 +52,7 @@ export type RenderMode = "normal" | "step" | "fast" | "debug";
 
 interface ViewState {
   mode: RenderMode;
-  currentView: "dashboard" | "map" | "kingdom" | "history";
+  currentView: "dashboard" | "map" | "kingdom" | "history" | "diplomacy";
   kingdomDetailIndex: number;
   historyScrollOffset: number;
   eventBuffer: Event[];
@@ -110,20 +118,125 @@ const TILE_CHARS: Record<TileType, string> = {
 
 // ─── World State Panel ────────────────────────────────────────────────────
 
-export function renderWorldStatePanel(
+const ACTION_GLYPHS: Record<string, string> = {
+  [ActionType.ATTACK]: `${RED}\u2694`,
+  [ActionType.EXPAND]: `${GREEN}\u2295`,
+  [ActionType.TRADE_OFFER]: `${GREEN}\u21C4`,
+  [ActionType.TRADE_ACCEPT]: `${GREEN}\u21C4`,
+  [ActionType.TRADE_REJECT]: `${YELLOW}\u21C4`,
+  [ActionType.NEGOTIATE]: `${CYAN}\u270E`,
+  [ActionType.RECRUIT]: `${CYAN}\u2699`,
+  [ActionType.FORTIFY]: `${CYAN}\u2726`,
+  [ActionType.THREATEN]: `${YELLOW}\u26A0`,
+  [ActionType.AID]: `${GREEN}\u2665`,
+  [ActionType.RATION]: `${DIM}\u25CC`,
+};
+
+function shortResources(r: Resources | null): string {
+  if (!r) return "";
+  const parts: string[] = [];
+  if (r.food > 0) parts.push(`${r.food}f`);
+  if (r.water > 0) parts.push(`${r.water}w`);
+  if (r.materials > 0) parts.push(`${r.materials}m`);
+  return parts.join(" ");
+}
+
+function formatActionLine(
+  action: Action | undefined,
+  feedback: string | undefined,
+): string {
+  if (feedback) {
+    return `   ${DIM}\u00BB \u25CC RATION (order rejected)${RESET}`;
+  }
+  if (!action) return "";
+
+  const glyph = ACTION_GLYPHS[action.actionType] ?? "";
+  let detail = "";
+  switch (action.actionType) {
+    case ActionType.ATTACK:
+      detail = `${action.targetKingdom} @ ${action.targetTileId}`;
+      break;
+    case ActionType.EXPAND:
+    case ActionType.FORTIFY:
+      detail = `${action.targetTileId}`;
+      break;
+    case ActionType.TRADE_OFFER:
+      detail = `\u2192 ${action.targetKingdom} ${shortResources(action.offer)}\u21C4${shortResources(action.request)}`;
+      break;
+    case ActionType.TRADE_ACCEPT:
+    case ActionType.TRADE_REJECT:
+    case ActionType.NEGOTIATE:
+      detail = `${action.targetKingdom ?? ""}`;
+      break;
+    case ActionType.THREATEN:
+      detail = `${action.targetKingdom} \u2014 demands ${shortResources(action.request)}`;
+      break;
+    case ActionType.AID:
+      detail = `\u2192 ${action.targetKingdom} ${shortResources(action.offer)}`;
+      break;
+    case ActionType.RECRUIT:
+      detail = "+5 soldiers";
+      break;
+    case ActionType.RATION:
+      break;
+  }
+  return `   ${DIM}\u00BB${RESET} ${glyph} ${action.actionType}${detail ? " " + detail : ""}${RESET}`;
+}
+
+function kingdomChips(
+  k: Kingdom,
   kingdoms: Record<string, Kingdom>,
-  tick: number,
-): string[] {
+  lostTileThisTick: ReadonlySet<string>,
+): string {
+  const chips: string[] = [];
+  const statuses = Object.entries(k.diplomaticMemory).filter(
+    ([other]) => kingdoms[other]?.alive,
+  );
+  if (statuses.some(([, m]) => m.status === DiplomaticStatus.AT_WAR)) {
+    chips.push(`${RED}${BOLD}AT_WAR${RESET}`);
+  }
+  if (lostTileThisTick.has(k.name)) {
+    chips.push(`${RED}SIEGE${RESET}`);
+  }
+  if (
+    chips.length === 0 &&
+    statuses.some(([, m]) => m.status === DiplomaticStatus.HOSTILE)
+  ) {
+    chips.push(`${YELLOW}HOSTILE${RESET}`);
+  }
+  const tp = statuses.filter(
+    ([, m]) => m.status === DiplomaticStatus.TRADE_PARTNER,
+  ).length;
+  if (chips.length < 2 && tp > 0) {
+    chips.push(`${GREEN}TP\u00D7${tp}${RESET}`);
+  }
+  if (k.tileIds.length === 0) {
+    chips.push(`${DIM}\u271D landless${RESET}`);
+  }
+  return chips.slice(0, 2).join(" ");
+}
+
+export function renderWorldStatePanel(result: TickResult): string[] {
+  const kingdoms = result.gameState.kingdoms;
   const lines: string[] = [];
   const aliveKingdoms = Object.values(kingdoms).filter((k) => k.alive);
   const deadKingdoms = Object.values(kingdoms).filter((k) => !k.alive);
+
+  // Feeds the SIEGE chip below
+  const lostTileThisTick = new Set<string>();
+  for (const e of result.eventsThisTick) {
+    if (e.eventType === EventType.COMBAT && e.data.tileCaptured) {
+      lostTileThisTick.add(e.data.defender as string);
+    }
+  }
 
   for (const k of aliveKingdoms) {
     const symbol = KINGDOM_SYMBOLS[k.name] ?? "\u25CF";
     const bar = drawMoraleBar(k.morale);
     const nameStr = colorKingdom(k.name.toUpperCase(), k.name);
+    const chips = kingdomChips(k, kingdoms, lostTileThisTick);
     lines.push(
-      ` ${colorKingdom(symbol, k.name)} ${nameStr}      morale ${bar}  ${k.morale.toFixed(1)}`,
+      ` ${colorKingdom(symbol, k.name)} ${nameStr}${chips ? " " + chips : ""}  ${bar} ${k.morale.toFixed(1)}`,
     );
 
     // Pop / army / effectiveness line
@@ -156,6 +269,12 @@ export function renderWorldStatePanel(
         `   ${padRight(resKey, 6)}${padLeft(deltaStr, 10)}/tick ${flag}${deficitNote}`,
       );
     }
+
+    const actionLine = formatActionLine(
+      result.actionsThisTick[k.name],
+      result.gameState.agentFeedback[k.name],
+    );
+    if (actionLine) lines.push(actionLine);
 
     lines.push(""); // blank separator
   }
@@ -202,56 +321,85 @@ export function renderEventsPanel(
     viewState.eventBuffer.length = 20;
   }
 
-  // Render events
+  // Truncated to panel width — a long description would break the box border
+  const { width: termWidth } = getTerminalDimensions();
+  const { right: rightWidth } = getPanelWidths(termWidth);
+  const maxLen = Math.max(24, rightWidth - 1);
   for (const e of viewState.eventBuffer) {
     const formatted = formatEvent(e);
     for (const line of formatted) {
-      lines.push(line);
+      lines.push(truncate(line, maxLen));
     }
   }
 
-  // Diplomacy subsection at bottom
   lines.push("");
   lines.push(` ${DIM}${"─".repeat(30)}${RESET}`);
-  lines.push(` ${BOLD}DIPLOMACY${RESET}`);
+  lines.push(` ${BOLD}PRESSURE${RESET}`);
 
   const aliveNames = Object.keys(kingdoms).filter((n) => kingdoms[n].alive);
-  let hasNonNeutral = false;
 
-  for (let i = 0; i < aliveNames.length; i++) {
-    for (let j = i + 1; j < aliveNames.length; j++) {
-      const a = aliveNames[i];
-      const b = aliveNames[j];
-      const mem = kingdoms[a].diplomaticMemory[b];
-      if (!mem) continue;
-      if (mem.status === DiplomaticStatus.NEUTRAL) continue;
-
-      hasNonNeutral = true;
-      const aAbbr = colorKingdom(a.slice(0, 2).toUpperCase(), a);
-      const bAbbr = colorKingdom(b.slice(0, 2).toUpperCase(), b);
-      const statusStr = padRight(mem.status, 14);
-
-      let detail = "";
-      if (
-        mem.status === DiplomaticStatus.AT_WAR ||
-        mem.status === DiplomaticStatus.HOSTILE
-      ) {
-        detail = `${DIM}(tick ${mem.lastInteractionTick})${RESET}`;
-      } else if (mem.status === DiplomaticStatus.TRADE_PARTNER) {
-        detail = `${DIM}(${mem.tradeDealsCompleted} trades)${RESET}`;
-      } else if (mem.status === DiplomaticStatus.ALLIED) {
-        detail = `${DIM}(allied)${RESET}`;
-      }
-
-      lines.push(` ${aAbbr}\u2194${bAbbr}  ${statusStr} ${detail}`);
-    }
-  }
-
-  if (!hasNonNeutral) {
-    lines.push(` ${DIM}all kingdoms: NEUTRAL${RESET}`);
+  for (const name of aliveNames) {
+    const k = kingdoms[name];
+    const symbol = colorKingdom(KINGDOM_SYMBOLS[name] ?? "\u25cf", name);
+    const label = colorPressure(pressureLabelFor(k));
+    lines.push(
+      ` ${symbol} ${padRight(name, 9)}${padRight(label, 10)}${DIM}${pressureReason(k)}${RESET}`,
+    );
   }
 
   return lines;
+}
+
+/** Mirrors perception's pressure bands without importing agent code into the CLI. */
+function pressureLabelFor(k: Kingdom): string {
+  const keys = ["food", "water", "materials"] as const;
+  for (const key of keys) {
+    if (((k.ticksInDeficit[key] as number) ?? 0) >= 3) return "CRITICAL";
+  }
+  for (const key of keys) {
+    if (k.consumption[key] - k.production[key] > 0) return "HIGH";
+  }
+  for (const key of keys) {
+    if (k.production[key] > 0 && k.consumption[key] >= k.production[key] * 0.8)
+      return "MEDIUM";
+  }
+  return "LOW";
+}
+
+/** One short phrase naming the kingdom's most urgent problem. */
+function pressureReason(k: Kingdom): string {
+  if (k.tileIds.length === 0) {
+    return `landless \u00b7 pop ${Math.round(k.population)}`;
+  }
+
+  const keys = ["food", "water", "materials"] as const;
+  // An empty store in active deficit outranks a short runway
+  let worstEmpty: string | null = null;
+  let worstEmptyTicks = -1;
+  let worstRunway: string | null = null;
+  let worstRunwayTicks = Infinity;
+
+  for (const key of keys) {
+    const net = k.production[key] - k.consumption[key];
+    if (net >= 0) continue;
+    const stock = k.stockpile[key];
+    const label = key === "materials" ? "matls" : key;
+    if (stock <= 0) {
+      const ticks = (k.ticksInDeficit[key] as number) ?? 0;
+      if (ticks > worstEmptyTicks) {
+        worstEmptyTicks = ticks;
+        worstEmpty = ticks > 0 ? `${label} deficit ${ticks}t` : `${label} store empty`;
+      }
+    } else {
+      const runway = Math.ceil(stock / -net);
+      if (runway < worstRunwayTicks) {
+        worstRunwayTicks = runway;
+        worstRunway = `${label} dry in ~${runway}t`;
+      }
+    }
+  }
+
+  return worstEmpty ?? worstRunway ?? "stable";
 }
 
 function formatEvent(e: Event): string[] {
@@ -272,17 +420,17 @@ function formatEvent(e: Event): string[] {
 
       if (tileCaptured) {
         lines.push(
-          ` ${tickStr} ${attackerColored} attacked ${defenderColored}`,
+          ` ${DIM}${tickStr}${RESET} ${RED}⚔${RESET} ${attackerColored} captured ${targetTileId} from ${defenderColored}`,
         );
         lines.push(
-          `       Captured ${targetTileId}. Lost ${Math.round(attackerLosses)} troops.`,
+          `       ${DIM}${outcome} · attacker lost ${Math.round(attackerLosses)} troops${RESET}`,
         );
       } else {
         lines.push(
-          ` ${tickStr} ${attackerColored} attacked ${defenderColored}`,
+          ` ${DIM}${tickStr}${RESET} ${RED}⚔${RESET} ${attackerColored} attacked ${defenderColored}`,
         );
         lines.push(
-          `       ${outcome === "repelled" ? "Repelled" : "Contested"} at ${targetTileId}. Lost ${Math.round(attackerLosses)} troops.`,
+          `       ${DIM}${outcome === "repelled" ? "repelled" : "contested"} at ${targetTileId} · lost ${Math.round(attackerLosses)} troops${RESET}`,
         );
       }
       break;
@@ -301,11 +449,13 @@ function formatEvent(e: Event): string[] {
       const offererColored = colorKingdom(offerer.toUpperCase(), offerer);
       const accepterColored = colorKingdom(accepter.toUpperCase(), accepter);
 
-      lines.push(` ${tickStr} ${offererColored} / ${accepterColored} trade agreed`);
+      lines.push(
+        ` ${DIM}${tickStr}${RESET} ${GREEN}\u21c4${RESET} ${offererColored} / ${accepterColored} trade agreed`,
+      );
       if (offered && received) {
         const offeredStr = describeResources(offered);
         const receivedStr = describeResources(received);
-        lines.push(`       ${offerer}: ${offeredStr} \u2192 ${accepter}: ${receivedStr}`);
+        lines.push(`       ${DIM}${offeredStr} \u21c4 ${receivedStr}${RESET}`);
       }
       break;
     }
@@ -315,7 +465,9 @@ function formatEvent(e: Event): string[] {
       const tileId = e.data.tileId as string;
       const tileType = e.data.tileType as string;
       const colored = colorKingdom(kingdom.toUpperCase(), kingdom);
-      lines.push(` ${tickStr} ${colored} claims ${tileType.toLowerCase()} ${tileId}`);
+      lines.push(
+        ` ${DIM}${tickStr}${RESET} ${GREEN}⊕${RESET} ${colored} claims ${tileType.toLowerCase()} ${tileId}`,
+      );
       break;
     }
 
@@ -352,18 +504,28 @@ function formatEvent(e: Event): string[] {
       const rawMsg = e.data.message;
       const msg = typeof rawMsg === "string" ? rawMsg : e.description;
       const sourceColored = source ? colorKingdom(source.toUpperCase(), source) : "";
+      // \u26a0 ultimatum \u00b7 \u2709 trade offer \u00b7 \u270e message
+      const glyph = e.description.includes("ultimatum")
+        ? `${YELLOW}\u26a0${RESET}`
+        : e.description.includes("offers")
+          ? `${CYAN}\u2709${RESET}`
+          : `${CYAN}\u270e${RESET}`;
       if (target) {
         const targetColored = colorKingdom(target.toUpperCase(), target);
-        lines.push(` ${tickStr} ${sourceColored} \u2192 ${targetColored}`);
+        lines.push(` ${DIM}${tickStr}${RESET} ${glyph} ${sourceColored} \u2192 ${targetColored}`);
       } else {
-        lines.push(` ${tickStr} ${sourceColored}`);
+        lines.push(` ${DIM}${tickStr}${RESET} ${glyph} ${sourceColored}`);
       }
       lines.push(`       ${DIM}"${truncate(msg, 50)}"${RESET}`);
       break;
     }
 
+    case EventType.MORALE_CHANGE:
+      lines.push(` ${DIM}${tickStr} \u25cc ${e.description}${RESET}`);
+      break;
+
     default:
-      lines.push(` ${tickStr} ${e.description}`);
+      lines.push(` ${DIM}${tickStr}${RESET} ${e.description}`);
       break;
   }
 
@@ -394,7 +556,7 @@ export function renderTick(result: TickResult): void {
       renderDashboard(result);
       break;
     case "map":
-      renderMapView(result.gameState.map, result.gameState.kingdoms);
+      renderMapView(result);
       break;
     case "kingdom":
       renderKingdomDetail(result.gameState);
@@ -402,7 +564,48 @@ export function renderTick(result: TickResult): void {
     case "history":
       renderHistoryView(result.gameState.events);
       break;
+    case "diplomacy":
+      renderDiplomacyView(result.gameState);
+      break;
   }
+}
+
+// ─── Ticker ───────────────────────────────────────────────────────────────
+
+/** Single most consequential event of the tick, for the dashboard's top line. */
+function tickerLine(result: TickResult): string | null {
+  const evs = result.eventsThisTick;
+
+  const elim = evs.find((e) => e.eventType === EventType.KINGDOM_ELIMINATED);
+  if (elim) return `${RED}${BOLD}☠ ${elim.description}${RESET}`;
+
+  const combat = evs.filter((e) => e.eventType === EventType.COMBAT);
+  if (combat.length > 0) {
+    const e = combat[0];
+    const attacker = e.data.attacker as string;
+    const defender = e.data.defender as string;
+    const captured = e.data.tileCaptured as string | null;
+    if (captured) {
+      // gameState.events already includes this tick, so this counts the war to date
+      const warTiles = result.gameState.events.filter(
+        (x) =>
+          x.eventType === EventType.COMBAT &&
+          x.data.attacker === attacker &&
+          x.data.defender === defender &&
+          x.data.tileCaptured,
+      ).length;
+      return `${RED}${BOLD}⚔ WAR${RESET}  ${RED}${attacker} captures ${defender}'s ${captured}${RESET}  ${DIM}· tile ${warTiles} of this war${RESET}`;
+    }
+    return `${RED}${BOLD}⚔ WAR${RESET}  ${RED}${attacker} attacks ${defender} — ${String(e.data.outcome)}${RESET}`;
+  }
+
+  const threat = evs.find((e) => e.description.includes("ultimatum"));
+  if (threat) return `${YELLOW}${BOLD}⚠${RESET} ${YELLOW}${threat.description}${RESET}`;
+
+  const crisis = evs.find((e) => e.eventType === EventType.RESOURCE_CRISIS);
+  if (crisis) return `${YELLOW}⚠ ${crisis.description}${RESET}`;
+
+  return null;
 }
 
 function renderDashboard(result: TickResult): void {
@@ -411,12 +614,18 @@ function renderDashboard(result: TickResult): void {
   const aliveCount = Object.values(result.gameState.kingdoms).filter(
     (k) => k.alive,
   ).length;
-  const title = `GEOPOLITICAL SIM \u00B7 tick ${result.tick} \u00B7 ${aliveCount} kingdoms alive`;
+  const names = Object.keys(result.gameState.kingdoms);
+  let warCount = 0;
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const mem = result.gameState.kingdoms[names[i]].diplomaticMemory[names[j]];
+      if (mem?.status === DiplomaticStatus.AT_WAR) warCount++;
+    }
+  }
+  const warStr = warCount > 0 ? ` \u00B7 ${warCount} war${warCount > 1 ? "s" : ""}` : "";
+  const title = `AGENTIC KINGDOMS \u00B7 tick ${result.tick} \u00B7 ${aliveCount} alive${warStr}`;
 
-  const leftLines = renderWorldStatePanel(
-    result.gameState.kingdoms,
-    result.tick,
-  );
+  const leftLines = renderWorldStatePanel(result);
   const rightLines = renderEventsPanel(
     result.eventsThisTick,
     result.gameState.kingdoms,
@@ -432,14 +641,20 @@ function renderDashboard(result: TickResult): void {
 
   const output: string[] = [];
   output.push(drawHeader(title, width));
+  const ticker = tickerLine(result);
+  if (ticker) {
+    output.push("│" + padRight(" " + truncate(ticker, width - 3), width - 2) + "│");
+  }
   output.push(drawColumnHeaders("WORLD STATE", "EVENTS", width));
-  output.push(...mergePanels(leftLines, rightLines, width));
+  // An overlong left line would shift the panel divider
+  const truncatedLeft = leftLines.map((l) => truncate(l, leftWidth - 1));
+  output.push(...mergePanels(truncatedLeft, rightLines, width));
   output.push(drawMidDivider(width, leftWidth));
 
   const hints =
     viewState.mode === "step"
-      ? "[space] next tick  [m] map  [k] kingdom detail  [h] history  [q] quit"
-      : "[m] map  [k] kingdom detail  [h] history  [q] quit";
+      ? "[space] next tick  [m] map  [d] diplomacy  [k] kingdom  [h] history  [q] quit"
+      : "[m] map  [d] diplomacy  [k] kingdom  [h] history  [q] quit";
   output.push(...drawFooter(hints, width));
 
   // Clear screen and write
@@ -480,13 +695,50 @@ function renderStackedLayout(
 
 // ─── Map View ─────────────────────────────────────────────────────────────
 
-export function renderMapView(
-  map: MapGrid,
-  kingdoms: Record<string, Kingdom>,
-): void {
+export function renderMapView(result: TickResult): void {
   const { width } = getTerminalDimensions();
-  const tick = _allEvents.length > 0 ? _allEvents[_allEvents.length - 1].tick : 0;
-  const title = `MAP VIEW \u00B7 tick ${tick}`;
+  const map = result.gameState.map;
+  const kingdoms = result.gameState.kingdoms;
+  const title = `MAP VIEW \u00B7 tick ${result.tick}`;
+
+  const capturedThisTick = new Set<string>();
+  for (const e of result.eventsThisTick) {
+    if (e.eventType === EventType.COMBAT && e.data.tileCaptured) {
+      capturedThisTick.add(e.data.tileCaptured as string);
+    }
+  }
+
+  // Active wars, oriented attacker\u2192defender by who has attacked more
+  const wars: Array<{ attacker: string; defender: string }> = [];
+  const names = Object.keys(kingdoms);
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const a = names[i];
+      const b = names[j];
+      const aMem = kingdoms[a].diplomaticMemory[b];
+      const bMem = kingdoms[b].diplomaticMemory[a];
+      if (aMem?.status !== DiplomaticStatus.AT_WAR) continue;
+      if ((aMem?.timesWeAttacked ?? 0) >= (bMem?.timesWeAttacked ?? 0)) {
+        wars.push({ attacker: a, defender: b });
+      } else {
+        wars.push({ attacker: b, defender: a });
+      }
+    }
+  }
+
+  // Defender tiles bordering the attacker are the war front
+  const atRisk = new Set<string>();
+  for (const war of wars) {
+    for (const tileId of kingdoms[war.defender].tileIds) {
+      if (
+        map.adjacency[tileId]?.some(
+          (adj) => map.tiles[adj].owner === war.attacker,
+        )
+      ) {
+        atRisk.add(tileId);
+      }
+    }
+  }
 
   const mapLines: string[] = [];
   mapLines.push("");
@@ -501,7 +753,14 @@ export function renderMapView(
 
       if (tile.owner) {
         const symbol = KINGDOM_SYMBOLS[tile.owner] ?? ch;
-        row += colorKingdom(symbol, tile.owner) + " ";
+        const color = KINGDOM_COLORS[tile.owner] ?? "";
+        if (capturedThisTick.has(tileId)) {
+          row += `${INVERSE}${RED}${symbol}${RESET} `;
+        } else if (atRisk.has(tileId)) {
+          row += `${color}${BOLD}${symbol}${RESET} `;
+        } else {
+          row += colorKingdom(symbol, tile.owner) + " ";
+        }
       } else {
         row += `${DIM}${ch}${RESET} `;
       }
@@ -526,13 +785,47 @@ export function renderMapView(
 
   mapLines.push("");
 
-  // Kingdom territory summary
-  for (const [name, k] of Object.entries(kingdoms)) {
-    if (!k.alive) continue;
-    const symbol = KINGDOM_SYMBOLS[name] ?? "\u25CF";
-    const tileCount = k.tileIds.length;
+  mapLines.push(`   ${BOLD}FORCES${RESET}`);
+  const ranked = Object.values(kingdoms).sort(
+    (a, b) => b.tileIds.length - a.tileIds.length,
+  );
+  for (const k of ranked) {
+    const symbol = KINGDOM_SYMBOLS[k.name] ?? "\u25CF";
+    if (!k.alive) {
+      mapLines.push(`   ${DIM}${symbol} ${padRight(k.name, 9)}eliminated${RESET}`);
+      continue;
+    }
+    if (k.tileIds.length === 0) {
+      mapLines.push(
+        `   ${DIM}${symbol} ${padRight(k.name, 9)} 0 tiles \u00B7 \u271D landless${RESET}`,
+      );
+      continue;
+    }
+    const bar =
+      (KINGDOM_COLORS[k.name] ?? "") +
+      "\u2586".repeat(Math.max(1, Math.min(10, Math.round(k.army / 2)))) +
+      RESET;
+    const warNote = wars.some((w) => w.attacker === k.name)
+      ? `  ${RED}\u2694 attacking${RESET}`
+      : wars.some((w) => w.defender === k.name)
+        ? `  ${RED}under siege${RESET}`
+        : "";
     mapLines.push(
-      `   ${colorKingdom(symbol, name)} ${colorKingdom(name, name)}: ${tileCount} tiles`,
+      `   ${colorKingdom(symbol, k.name)} ${padRight(k.name, 9)}${padLeft(String(k.tileIds.length), 2)} tiles  army ${padLeft(String(Math.round(k.army)), 2)} ${bar}${warNote}`,
+    );
+  }
+
+  mapLines.push("");
+  mapLines.push(
+    `   ${INVERSE}${RED} ${RESET} ${DIM}captured this tick${RESET}   ${BOLD}bold${RESET} ${DIM}= border tile at risk${RESET}`,
+  );
+  for (const w of wars) {
+    const riskIds = [...atRisk]
+      .filter((id) => map.tiles[id].owner === w.defender)
+      .slice(0, 5)
+      .join(", ");
+    mapLines.push(
+      `   ${RED}\u2694${RESET} ${DIM}WAR FRONT ${w.attacker}\u2192${w.defender}${riskIds ? " \u00B7 at risk next: " + riskIds : ""}${RESET}`,
     );
   }
 
@@ -540,6 +833,127 @@ export function renderMapView(
   mapLines.push(`  ${DIM}[m] return to dashboard${RESET}`);
 
   const output = drawBox(mapLines, width, title);
+  process.stdout.write("\x1b[2J\x1b[H");
+  process.stdout.write(output.join("\n") + "\n");
+}
+
+// ─── Diplomacy View ───────────────────────────────────────────────────────
+
+function statusCell(mem: { status: DiplomaticStatus; tradeDealsCompleted: number } | undefined): string {
+  if (!mem) return `${DIM}···${RESET}`;
+  switch (mem.status) {
+    case DiplomaticStatus.AT_WAR:
+      return `${RED}${BOLD}WAR${RESET}`;
+    case DiplomaticStatus.HOSTILE:
+      return `${YELLOW}HOS${RESET}`;
+    case DiplomaticStatus.ALLIED:
+      return `${GREEN}${BOLD}ALL${RESET}`;
+    case DiplomaticStatus.TRADE_PARTNER:
+      return `${GREEN}TP${mem.tradeDealsCompleted}${RESET}`;
+    default:
+      return `${DIM}···${RESET}`;
+  }
+}
+
+export function renderDiplomacyView(gameState: GameState): void {
+  const { width } = getTerminalDimensions();
+  const kingdoms = gameState.kingdoms;
+  const tick = gameState.tick;
+  const names = Object.keys(kingdoms);
+  const lines: string[] = [];
+
+  // ── Relationship matrix ──
+  lines.push("");
+  let header = padRight("", 13);
+  for (const n of names) {
+    header += padRight(`${colorKingdom((KINGDOM_SYMBOLS[n] ?? "●") + n.slice(0, 4), n)}`, 8);
+  }
+  lines.push(" " + header);
+  for (const a of names) {
+    const rowLabel = kingdoms[a].alive
+      ? colorKingdom(`${KINGDOM_SYMBOLS[a] ?? "●"} ${a}`, a)
+      : `${DIM}${KINGDOM_SYMBOLS[a] ?? "●"} ${a}${RESET}`;
+    let row = padRight(rowLabel, 13);
+    for (const b of names) {
+      if (a === b) {
+        row += padRight(`${DIM} ─ ${RESET}`, 8);
+      } else {
+        row += padRight(statusCell(kingdoms[a].diplomaticMemory[b]), 8);
+      }
+    }
+    lines.push(" " + row);
+  }
+
+  const escrows: string[] = [];
+  for (const offererName of names) {
+    for (const [targetName, mem] of Object.entries(kingdoms[offererName].diplomaticMemory)) {
+      const offer = mem.outstandingOffer;
+      if (!offer || !offer.offer || !offer.request) continue;
+      const remaining = Math.max(0, 3 - (tick - mem.lastInteractionTick));
+      escrows.push(
+        `   ${colorKingdom(KINGDOM_SYMBOLS[offererName] ?? "●", offererName)} ${padRight(offererName, 8)}→ ${padRight(targetName, 8)} ${GREEN}${shortResources(offer.offer)}${RESET} ⇄ ${shortResources(offer.request)}   ${DIM}expires in ${remaining}t${RESET}`,
+      );
+    }
+  }
+  lines.push("");
+  lines.push(` ${BOLD}ESCROW${RESET} ${DIM}(${escrows.length} open — goods locked until accepted, rejected, or expired)${RESET}`);
+  lines.push(...(escrows.length > 0 ? escrows : [`   ${DIM}none${RESET}`]));
+
+  const warLines: string[] = [];
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const a = names[i];
+      const b = names[j];
+      const mem = kingdoms[a].diplomaticMemory[b];
+      if (mem?.status !== DiplomaticStatus.AT_WAR) continue;
+      const ticksAtWar = Math.max(mem.ticksAtWar, kingdoms[b].diplomaticMemory[a]?.ticksAtWar ?? 0);
+      const tilesTaken = gameState.events.filter(
+        (e) =>
+          e.eventType === EventType.COMBAT &&
+          e.data.tileCaptured &&
+          ((e.data.attacker === a && e.data.defender === b) ||
+            (e.data.attacker === b && e.data.defender === a)),
+      ).length;
+      warLines.push(
+        `   ${RED}⚔${RESET} ${colorKingdom(a, a)} ↔ ${colorKingdom(b, b)}   ${DIM}${ticksAtWar} ticks · ${tilesTaken} tiles taken · exhaustion -0.05 morale/tick${RESET}`,
+      );
+    }
+  }
+  lines.push("");
+  lines.push(` ${BOLD}ACTIVE WARS${RESET}${warLines.length === 0 ? ` ${DIM}(none)${RESET}` : ""}`);
+  lines.push(...warLines);
+
+  const threatLines: string[] = [];
+  for (const sourceName of names) {
+    for (const [targetName, mem] of Object.entries(kingdoms[sourceName].diplomaticMemory)) {
+      const threat = mem.outstandingThreat;
+      if (!threat || !threat.request) continue;
+      const remaining = Math.max(0, 3 - (tick - mem.lastInteractionTick));
+      threatLines.push(
+        `   ${YELLOW}⚠${RESET} ${colorKingdom(sourceName, sourceName)} demands ${shortResources(threat.request)} from ${colorKingdom(targetName, targetName)}   ${DIM}${remaining}t to respond${RESET}`,
+      );
+    }
+  }
+  lines.push("");
+  lines.push(` ${BOLD}THREATS${RESET}${threatLines.length === 0 ? ` ${DIM}(none outstanding)${RESET}` : ""}`);
+  lines.push(...threatLines);
+
+  const trades = gameState.events.filter((e) => e.eventType === EventType.TRADE);
+  const pairCounts: Record<string, number> = {};
+  for (const t of trades) {
+    const key = [...t.kingdomsInvolved].sort().join(" ⇄ ");
+    pairCounts[key] = (pairCounts[key] ?? 0) + 1;
+  }
+  const topPair = Object.entries(pairCounts).sort((x, y) => y[1] - x[1])[0];
+  lines.push("");
+  lines.push(
+    ` ${BOLD}LEDGER${RESET} ${DIM}· ${trades.length} trades completed${topPair ? ` · most active: ${topPair[0]} (${topPair[1]})` : ""}${RESET}`,
+  );
+
+  lines.push("");
+  lines.push(`  ${DIM}[d] return to dashboard${RESET}`);
+
+  const output = drawBox(lines, width, `DIPLOMACY · tick ${tick}`);
   process.stdout.write("\x1b[2J\x1b[H");
   process.stdout.write(output.join("\n") + "\n");
 }
